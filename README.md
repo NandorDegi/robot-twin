@@ -78,9 +78,19 @@ before anything else is running.
 - `GET /health` -> `{"status":"ok"}`
 - `GET /stream` -> MJPEG feed (shown in the twin)
 - `GET /detect` -> JSON list of detected pieces (board square + robot-frame target) and frame size
-- `GET /calibrate` -> fits and saves the board homography from ArUco corner markers
+- `GET /calibrate` -> fits and saves the board homography from ArUco corner markers (old path; refused once a wizard calibration exists)
+- `/calib/*` -> the Calibrate wizard (draft, save, versions, rollback, final check); see `apps/vision/vision/calib_api.py`
 
 ### Calibrate the board (once)
+
+Use the **Calibrate** wizard in the twin (button in the main panel, or
+`/#calibrate`): camera, board geometry and orientation, empty-board reference,
+thresholds, board pose in the robot frame, save and final check. The chess loop
+refuses to run without a valid saved calibration. Runbook:
+[`docs/NUC-BRINGUP.md`](docs/NUC-BRINGUP.md) section 10. To try it without a
+camera: `VISION_CAMERA_SOURCE=synthetic .venv/bin/python -m vision`.
+
+The older command-line path still works for a first homography:
 
 Place ArUco markers `0..3` at the four board corners, then (from `apps/vision`):
 

@@ -48,6 +48,11 @@ export interface ChessSessionOptions {
   observePose?: number[];
   /** Wait (ms) after reaching the observe pose before reading the camera. */
   settleMs?: number;
+  /**
+   * The loop runs only when this says ok (calibration wizard: a valid saved
+   * calibration). Default: no check.
+   */
+  calibrationGate?: () => { ok: boolean; reason: string };
 }
 
 export const DEFAULT_OBSERVE_POSE: number[] = (() => {
@@ -88,6 +93,7 @@ export class ChessSession {
   private readonly robotColor: Color;
   private readonly observePose: number[];
   private readonly settleMs: number;
+  private readonly calibrationGate: (() => { ok: boolean; reason: string }) | null;
   private busy = false;
   private lastSan = "";
   private status: LoopStatus = { stage: "idle", message: "", mismatches: [], verified: false };
@@ -104,6 +110,17 @@ export class ChessSession {
     this.robotColor = opts.robotColor ?? "b";
     this.observePose = opts.observePose ?? DEFAULT_OBSERVE_POSE;
     this.settleMs = opts.settleMs ?? 500;
+    this.calibrationGate = opts.calibrationGate ?? null;
+  }
+
+  get isBusy(): boolean {
+    return this.busy;
+  }
+
+  /** Move the arm out of the camera view (calibration wizard, operator button). */
+  async moveToObservePose(): Promise<{ ok: boolean; error?: string }> {
+    if (this.busy) return { ok: false, error: "robot busy" };
+    return this.controller.moveJoints(this.observePose);
   }
 
   subscribe(fn: () => void): () => void {
@@ -211,6 +228,11 @@ export class ChessSession {
   private async run(fn: () => Promise<void>): Promise<{ ok: boolean; error?: string }> {
     if (this.busy) return { ok: false, error: "robot busy" };
     if (this.status.stage === "fault") return { ok: false, error: `fault: ${this.status.message} (clear it first)` };
+    const gate = this.calibrationGate?.();
+    if (gate && !gate.ok) {
+      this.setStatus("idle", `refused: ${gate.reason}`);
+      return { ok: false, error: gate.reason };
+    }
     this.busy = true;
     try {
       await fn();

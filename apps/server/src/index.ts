@@ -6,6 +6,8 @@ import { startWebsocket } from "./ws";
 import { ChessSession } from "./chess";
 import { EngineDecider, deciderFromEnv } from "./decider";
 import { VisionObserver } from "./observer";
+import { CalibrationService } from "./calib/service";
+import { CalibrationStore, defaultCalibrationFile } from "./calib/store";
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = process.env.ROBOT_WS_HOST ?? "127.0.0.1";
@@ -45,20 +47,37 @@ function parsePose(v: string | undefined): number[] | undefined {
   }
   return q;
 }
+// Calibration wizard: the loop refuses to run without a valid saved
+// calibration whenever the camera is part of the loop (or on a real robot).
+const calib = new CalibrationService(controller, {
+  store: new CalibrationStore(defaultCalibrationFile()),
+  visionUrl,
+  required: process.env.CHESS_REQUIRE_CALIBRATION
+    ? process.env.CHESS_REQUIRE_CALIBRATION === "1"
+    : Boolean(visionUrl) || adapter.isReal,
+});
+calib.reload();
+{
+  const st = calib.store.state;
+  console.log(`[robot] calibration ${st.file}: ${st.valid ? `r${st.calibration?.revision} valid` : st.reasons.join("; ")}`);
+}
+
 const chess = new ChessSession(controller, {
+  calibrationGate: () => calib.gate(),
   decider: deciderFromEnv(new EngineDecider(Number(process.env.CHESS_ELO ?? 1200))),
   observer: visionUrl ? new VisionObserver(visionUrl) : null,
   requireVision: process.env.CHESS_REQUIRE_VISION ? process.env.CHESS_REQUIRE_VISION === "1" : adapter.isReal,
   observePose: parsePose(process.env.CHESS_OBSERVE_POSE),
   settleMs: Number(process.env.CHESS_SETTLE_MS ?? 500),
 });
+calib.attach(chess);
 
 async function main(): Promise<void> {
   await controller.start();
   // Simulation starts enabled for convenience. A real robot never does: a
   // person enables it in the twin after checking the robot and its stop.
   if (!adapter.isReal) controller.setEnabled(true);
-  startWebsocket(controller, PORT, { host: HOST, chess });
+  startWebsocket(controller, PORT, { host: HOST, chess, calib });
   console.log(`[robot] decider: ${chess.deciderName}; vision: ${visionUrl || "none"}`);
 }
 

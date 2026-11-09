@@ -25,6 +25,9 @@ class Config:
 
     # Camera: use 0 for the first USB camera. On the NUC this is a UVC webcam.
     CAMERA_INDEX = _int("VISION_CAMERA_INDEX", 0)
+    # Optional camera source instead of the index: "synthetic" (a rendered
+    # board, dev and tests only) or the path of a video/image file (looped).
+    CAMERA_SOURCE = os.environ.get("VISION_CAMERA_SOURCE", "")
     FRAME_WIDTH = _int("VISION_FRAME_WIDTH", 1280)
     FRAME_HEIGHT = _int("VISION_FRAME_HEIGHT", 720)
     JPEG_QUALITY = _int("VISION_JPEG_QUALITY", 70)
