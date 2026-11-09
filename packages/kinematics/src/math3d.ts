@@ -170,29 +170,38 @@ export function mat4ToMat3(m: Mat4): Float64Array {
 }
 
 /**
- * Rotation vector (axis * angle) that takes `from` to `to`, both 3x3 rotation
- * matrices in column-major (length 9). Used for orientation errors in IK.
+ * Rotation vector (axis * angle), in the WORLD frame, that takes `from` to
+ * `to`: exp([w]x) * from = to, i.e. the log map of R_err = to * from^T.
+ * Both inputs are 3x3 rotation matrices in column-major order (length 9).
+ * The IK uses it as the orientation error, and its Jacobian rows are world
+ * axes, so the error must be in the world frame too.
  */
 export function rotationVector(from: Float64Array, to: Float64Array): Vec3 {
-  // R_err = from^T * to
-  const r = new Float64Array(9);
-  for (let c = 0; c < 3; c++) {
-    for (let rw = 0; rw < 3; rw++) {
-      r[c * 3 + rw] =
-        from[0 * 3 + rw] * to[c * 3 + 0] +
-        from[1 * 3 + rw] * to[c * 3 + 1] +
-        from[2 * 3 + rw] * to[c * 3 + 2];
-    }
+  // Column-major: element (row, col) is at col * 3 + row.
+  const at = (m: Float64Array, row: number, col: number) => m[col * 3 + row]!;
+  // R = to * from^T  ->  R(i,j) = sum_k to(i,k) * from(j,k)
+  const R = (i: number, j: number) =>
+    at(to, i, 0) * at(from, j, 0) + at(to, i, 1) * at(from, j, 1) + at(to, i, 2) * at(from, j, 2);
+  const r00 = R(0, 0), r11 = R(1, 1), r22 = R(2, 2);
+  const sx = R(2, 1) - R(1, 2);
+  const sy = R(0, 2) - R(2, 0);
+  const sz = R(1, 0) - R(0, 1);
+  const sinTimes2 = Math.hypot(sx, sy, sz);
+  const cos = Math.min(1, Math.max(-1, (r00 + r11 + r22 - 1) / 2));
+  const angle = Math.atan2(sinTimes2 / 2, cos);
+  if (angle < 1e-9) return [0, 0, 0];
+  if (Math.PI - angle > 1e-4) {
+    const k = angle / sinTimes2;
+    return [sx * k, sy * k, sz * k];
   }
-  // skew vector
-  const sx = r[2 * 3 + 1] - r[1 * 3 + 2];
-  const sy = r[0 * 3 + 2] - r[2 * 3 + 0];
-  const sz = r[1 * 3 + 0] - r[0 * 3 + 1];
-  const angle = Math.atan2(
-    Math.hypot(sx, sy, sz),
-    (r[0] + r[4] + r[8] - 1) / 2,
-  );
-  if (angle < 1e-9 || Math.hypot(sx, sy, sz) < 1e-12) return [0, 0, 0];
-  const s = angle / Math.hypot(sx, sy, sz);
-  return [sx * s, sy * s, sz * s];
+  // Near 180 deg the skew part vanishes: take the axis from the diagonal.
+  const xx = Math.sqrt(Math.max(0, (r00 + 1) / 2));
+  const yy = Math.sqrt(Math.max(0, (r11 + 1) / 2));
+  const zz = Math.sqrt(Math.max(0, (r22 + 1) / 2));
+  let axis: Vec3;
+  if (xx >= yy && xx >= zz) axis = [xx, (R(0, 1) + R(1, 0)) / (4 * xx), (R(0, 2) + R(2, 0)) / (4 * xx)];
+  else if (yy >= zz) axis = [(R(0, 1) + R(1, 0)) / (4 * yy), yy, (R(1, 2) + R(2, 1)) / (4 * yy)];
+  else axis = [(R(0, 2) + R(2, 0)) / (4 * zz), (R(1, 2) + R(2, 1)) / (4 * zz), zz];
+  const n = Math.hypot(axis[0], axis[1], axis[2]) || 1;
+  return [(axis[0] / n) * angle, (axis[1] / n) * angle, (axis[2] / n) * angle];
 }

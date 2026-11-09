@@ -24,13 +24,21 @@
  *     pnpm --filter @robot/server calibrate --out board_calibration.json
  */
 import { InverseKinematicsSolver, type Vec3 } from "@robot/kinematics";
-import { buildChain, defaultArmConfig } from "@robot/robot-config";
+import {
+  APPROACH_HEIGHT_MM,
+  PANDA_TCP_OFFSET_MM,
+  buildChain,
+  createPandaSolver,
+  defaultArmConfig,
+  seedToward,
+  toolDownRotation,
+} from "@robot/robot-config";
 import { BOARD } from "@robot/chess";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { writeFileSync } from "node:fs";
 
-const EE_OFFSET: Vec3 = [0, 0, 130];
+const EE_OFFSET: Vec3 = [0, 0, PANDA_TCP_OFFSET_MM];
 
 /** B -> T: (x, y, z)_B  ->  (x, z, -y)_T. */
 function robotToTwin(p: Vec3): [number, number, number] {
@@ -51,7 +59,7 @@ function squareTarget(
   // a-file at the high-X corner (origin); files run toward -X, ranks toward +Z.
   const lx = -(col + 0.5) * s;
   const lz = (row + 0.5) * s;
-  return [origin[0] + lx * c + lz * sn, BOARD.grabHeight, origin[2] - lx * sn + lz * c];
+  return [origin[0] + lx * c + lz * sn, origin[1] + BOARD.grabHeight, origin[2] - lx * sn + lz * c];
 }
 
 function trayTarget(
@@ -62,9 +70,9 @@ function trayTarget(
   const t = (rotationDeg * Math.PI) / 180;
   const c = Math.cos(t);
   const sn = Math.sin(t);
-  const lx = -(9 + 0.5) * s;
-  const lz = (4 + 0.5) * s;
-  return [origin[0] + lx * c + lz * sn, BOARD.grabHeight, origin[2] - lx * sn + lz * c];
+  const lx = -(BOARD.tray.file + 0.5) * s;
+  const lz = (BOARD.tray.rank + 0.5) * s;
+  return [origin[0] + lx * c + lz * sn, origin[1] + BOARD.grabHeight, origin[2] - lx * sn + lz * c];
 }
 
 /** Yaw (deg) that makes the board's a-h edge (= -X at 0) point along a given T vector. */
@@ -76,26 +84,29 @@ function yawFromAtoH(a1T: [number, number, number], h1T: [number, number, number
 
 function reachability(origin: [number, number, number], rotationDeg: number): void {
   const chain = buildChain(defaultArmConfig());
-  const solver = new InverseKinematicsSolver(chain, {
-    positionTolerance: 1.0,
-    eeOffset: EE_OFFSET,
-  });
-  const seed = chain.joints.map((j) => (j.min + j.max) / 2);
+  const solver = createPandaSolver(chain);
+  const down = toolDownRotation(chain);
   const cols = "abcdefgh";
   let ok = 0;
   const misses: string[] = [];
-  for (let row = 0; row < 8; row++) {
-    for (let col = 0; col < 8; col++) {
-      const t = squareTarget(origin, rotationDeg, col, row);
-      const res = solver.solve({ position: t }, { seed });
-      if (res.success) ok++;
-      else misses.push(`${cols[col]}${row + 1} (err ${res.error.toFixed(1)}mm)`);
+  // A square counts as reachable when the hand can point straight down at the
+  // grab height AND at the approach height above it (the robot descends
+  // vertically from there).
+  const check = (name: string, t: [number, number, number]) => {
+    for (const dy of [0, APPROACH_HEIGHT_MM]) {
+      const p: [number, number, number] = [t[0], t[1] + dy, t[2]];
+      const res = solver.solve({ position: p, orientation: down }, { seed: seedToward(p) });
+      if (!res.success) {
+        misses.push(`${name}${dy ? " (approach)" : ""} (err ${Number.isFinite(res.error) ? res.error.toFixed(1) : "no safe pose"}mm)`);
+        return;
+      }
     }
+    ok++;
+  };
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) check(`${cols[col]}${row + 1}`, squareTarget(origin, rotationDeg, col, row));
   }
-  const tray = trayTarget(origin, rotationDeg);
-  const tres = solver.solve({ position: tray }, { seed });
-  if (tres.success) ok++;
-  else misses.push(`tray (err ${tres.error.toFixed(1)}mm)`);
+  check("tray", trayTarget(origin, rotationDeg));
 
   console.log("\nReachability of every square + tray:");
   console.log(`  reachable: ${ok}/${65}`);

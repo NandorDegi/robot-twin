@@ -19,6 +19,9 @@ import type {
   KinematicChain,
 } from "./types";
 
+/** Scale (mm per rad) of the orientation rows in the IK task. */
+const ORIENTATION_WEIGHT_MM = 200;
+
 /**
  * Inverse kinematics via Levenberg-Marquardt (damped least squares).
  *
@@ -134,7 +137,7 @@ export class InverseKinematicsSolver implements FunctionalIK {
       const range = j.max - j.min;
       for (const dir of [1, -1]) {
         const s = seed.slice();
-        s[i] = this.clampToLimits([seed[i]! + dir * range * 0.15])[0];
+        s[i] = this.clampJoint(i, seed[i]! + dir * range * 0.15);
         candidates.push(s);
       }
     }
@@ -236,9 +239,12 @@ export class InverseKinematicsSolver implements FunctionalIK {
       if (withOrientation) {
         const curR = mat4ToMat3(fk.pose);
         const rv = rotationVector(curR, target.orientation!);
-        e[3] = rv[0];
-        e[4] = rv[1];
-        e[5] = rv[2];
+        // Weight the orientation rows by a length (mm/rad). Without it the
+        // radian error is negligible next to the millimetre error and the
+        // solver stalls before the orientation converges.
+        e[3] = rv[0] * ORIENTATION_WEIGHT_MM;
+        e[4] = rv[1] * ORIENTATION_WEIGHT_MM;
+        e[5] = rv[2] * ORIENTATION_WEIGHT_MM;
       }
       const J = buildJacobianForPoint(fk, eePos, n, withOrientation);
 
@@ -270,11 +276,29 @@ export class InverseKinematicsSolver implements FunctionalIK {
       const dq = solveDampedLeastSquares(JAug, total, eAug, this.damping);
 
       // Clamp the step to joint limits and to a sane per-iteration magnitude.
+      // Backtrack (halve the step) while the task error grows: a full
+      // Gauss-Newton step can overshoot and make the solver oscillate.
       const maxStep = 0.3;
-      for (let i = 0; i < q.length; i++) {
-        const step = Math.abs(dq[i]) > maxStep ? Math.sign(dq[i]) * maxStep : dq[i];
-        q[i] = this.clampToLimits([q[i] + step])[0];
+      const cost = (qq: JointState): number => {
+        const f = forwardKinematics(this.chain, qq);
+        const p = mat4TransformPoint(f.pose, this.eeOffset);
+        let c = (targetPos[0] - p[0]) ** 2 + (targetPos[1] - p[1]) ** 2 + (targetPos[2] - p[2]) ** 2;
+        if (withOrientation) c += (vec3Length(rotationVector(mat4ToMat3(f.pose), target.orientation!)) * ORIENTATION_WEIGHT_MM) ** 2;
+        return c;
+      };
+      const c0 = ground.length ? Number.POSITIVE_INFINITY : cost(q);
+      let scale = 1;
+      let candidate = q.slice();
+      for (let tries = 0; tries < 6; tries++) {
+        candidate = q.map((v, i) => {
+          const raw = dq[i] * scale;
+          const step = Math.abs(raw) > maxStep ? Math.sign(raw) * maxStep : raw;
+          return this.clampJoint(i, v + step);
+        });
+        if (cost(candidate) < c0) break;
+        scale /= 2;
       }
+      for (let i = 0; i < q.length; i++) q[i] = candidate[i]!;
     }
 
     return best ?? {
@@ -301,7 +325,7 @@ export class InverseKinematicsSolver implements FunctionalIK {
         const j = this.chain.joints[i]!;
         const half = (j.max - j.min) / 2;
         const dir = (i % 2 === 0 ? 1 : -1) * (k % 2 === 0 ? 1 : -1);
-        s[i] = this.clampToLimits([mid[i] + dir * half * 0.7])[0];
+        s[i] = this.clampJoint(i, mid[i]! + dir * half * 0.7);
       }
       seeds.push(s);
     }
@@ -314,8 +338,8 @@ export class InverseKinematicsSolver implements FunctionalIK {
       for (const a of [-1, 1]) {
         for (const b of [-1, 1]) {
           const s: JointState = mid.slice();
-          s[4] = this.clampToLimits([mid[4]! + a * 1.0])[0]!;
-          s[5] = this.clampToLimits([mid[5]! + b * 1.0])[0]!;
+          s[4] = this.clampJoint(4, mid[4]! + a * 1.0);
+          s[5] = this.clampJoint(5, mid[5]! + b * 1.0);
           seeds.push(s);
         }
       }
@@ -326,6 +350,13 @@ export class InverseKinematicsSolver implements FunctionalIK {
   /** Neutral seed: the midpoint of each joint's range. */
   private currentSeed(): JointState {
     return this.chain.joints.map((j) => (j.min + j.max) / 2);
+  }
+
+  /** Clamp one value to the limits of joint `i` (not of joint 0). */
+  private clampJoint(i: number, v: number): number {
+    const j = this.chain.joints[i];
+    if (!j) return v;
+    return Math.max(Math.min(j.min, j.max), Math.min(Math.max(j.min, j.max), v));
   }
 
   private clampToLimits(q: JointState): JointState {
@@ -401,9 +432,9 @@ function buildJacobianForPoint(
     J[1 * n + i] = pv[1];
     J[2 * n + i] = pv[2];
     if (withOrientation) {
-      J[3 * n + i] = a[0];
-      J[4 * n + i] = a[1];
-      J[5 * n + i] = a[2];
+      J[3 * n + i] = a[0] * ORIENTATION_WEIGHT_MM;
+      J[4 * n + i] = a[1] * ORIENTATION_WEIGHT_MM;
+      J[5 * n + i] = a[2] * ORIENTATION_WEIGHT_MM;
     }
   }
   return J;

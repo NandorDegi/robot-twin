@@ -145,3 +145,49 @@ describe("trajectory", () => {
     }
   });
 });
+
+describe("trajectory per-joint limits", () => {
+  it("keeps every joint under its own velocity limit", async () => {
+    const { generateTrajectory } = await import("../src/trajectory");
+    const from = [0, 0, 0];
+    const to = [1, 0.5, 2];
+    const vmax = [0.2, 0.2, 0.5];
+    const pts = generateTrajectory(from, to, { velocityLimit: vmax, accelerationLimit: 5, timestep: 0.001 });
+    for (let k = 1; k < pts.length; k++) {
+      const dt = pts[k]!.time - pts[k - 1]!.time;
+      if (dt <= 0) continue;
+      for (let i = 0; i < 3; i++) {
+        const v = Math.abs(pts[k]!.q[i]! - pts[k - 1]!.q[i]!) / dt;
+        expect(v).toBeLessThanOrEqual(vmax[i]! * 1.01);
+      }
+    }
+  });
+
+  it("rejects a non-positive limit", async () => {
+    const { generateTrajectory } = await import("../src/trajectory");
+    expect(() => generateTrajectory([0], [1], { velocityLimit: 0 })).toThrow();
+  });
+});
+
+describe("IK joint limits are per joint", () => {
+  it("never returns a value outside each joint's own limits", async () => {
+    const { InverseKinematicsSolver, forwardKinematics } = await import("../src/index");
+    const { mat4Identity, mat4RotX, mat4Translation, mat4Mul } = await import("../src/math3d");
+    // Joint 0 has a wide range, joint 1 a narrow negative range.
+    const chain = {
+      name: "t",
+      base: mat4Identity(),
+      joints: [
+        { name: "a", min: -3, max: 3, axis: [0, 0, 1] as [number, number, number], origin: mat4Identity() },
+        { name: "b", min: -2, max: -0.5, axis: [0, 0, 1] as [number, number, number], origin: mat4Mul(mat4Translation(100, 0, 0), mat4RotX(0)) },
+      ],
+      tool: mat4Translation(100, 0, 0),
+    };
+    const s = new InverseKinematicsSolver(chain, { positionTolerance: 0.5, maxIterations: 100 });
+    // A target that wants joint b positive: the solver must stop at -0.5.
+    const fk = forwardKinematics(chain, [0, 1.0]);
+    const r = s.solve({ position: [fk.pose[12]!, fk.pose[13]!, fk.pose[14]!] }, { seed: [0, -1] });
+    expect(r.q[1]).toBeLessThanOrEqual(-0.5 + 1e-9);
+    expect(r.q[1]).toBeGreaterThanOrEqual(-2 - 1e-9);
+  });
+});

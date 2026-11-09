@@ -6,7 +6,7 @@
  */
 export const BOARD = {
   /** Robot-frame position of the a1 square corner (in front of the arm base). */
-  origin: [530, 0, -160] as [number, number, number],
+  origin: [600, 0, -160] as [number, number, number],
   /** Side length of one square (mm). */
   square: 40,
   /** Height (mm) at which the gripper grabs / places a piece. */
@@ -20,6 +20,13 @@ export const BOARD = {
    * VISION_BOARD_ROTATION_DEG so the twin and vision agree.
    */
   rotationDeg: 0,
+  /**
+   * Capture tray position in board units (file index, rank index; a1 = 0,0).
+   * The default is two files beyond the a-file, at mid-board: away from the
+   * robot base. A position next to the base (files > 7) is not reachable with
+   * the hand pointing down.
+   */
+  tray: { file: -2, rank: 3.5 },
 };
 
 /** Board-plane (col, row) from a coordinate like "e4". */
@@ -57,12 +64,13 @@ function boardOffset(
 /** Robot-frame target (mm) for the centre of a board square. */
 export function squareToTarget(square: string): [number, number, number] {
   const { col, row } = boardCoords(square);
-  const [x, , z] = boardOffset(col, row);
-  return [x, BOARD.grabHeight, z];
+  const [x, y, z] = boardOffset(col, row);
+  // origin[1] is the board surface height; the grab height is above it.
+  return [x, y + BOARD.grabHeight, z];
 }
 
 /** Robot-frame target (mm) for the off-board capture tray. */
 export function trayTarget(): [number, number, number] {
-  const [x, , z] = boardOffset(9, 4);
-  return [x, BOARD.grabHeight, z];
+  const [x, y, z] = boardOffset(BOARD.tray.file, BOARD.tray.rank);
+  return [x, y + BOARD.grabHeight, z];
 }

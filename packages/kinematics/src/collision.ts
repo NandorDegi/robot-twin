@@ -57,12 +57,15 @@ export interface SafetyOptions {
  */
 
 const DEFAULT_GRIPPER: Required<GripperConfig> = {
+  // Franka Hand, in the flange (panda_link8) frame, mm. The hand body ends at
+  // about 58 mm, the finger pads at about 103 mm (the official TCP, 0.1034 m)
+  // and the finger tips at about 113 mm. The capsules add some margin.
   fingerHalf: 20,
-  fingerRadius: 18,
-  fingerStart: 20,
-  fingerEnd: 153,
-  palmRadius: 26,
-  palmEnd: 38,
+  fingerRadius: 12,
+  fingerStart: 58,
+  fingerEnd: 106,
+  palmRadius: 30,
+  palmEnd: 58,
 };
 
 /**

@@ -1,4 +1,5 @@
 export * from "./config";
+export * from "./panda";
 export type { RobotConfig } from "./config";
 import { buildChain, defaultArmConfig } from "./config";
 import type { KinematicChain } from "@robot/kinematics";

@@ -12,10 +12,21 @@ import type { JointState, TrajectoryPoint } from "./types";
 export function generateTrajectory(
   from: JointState,
   to: JointState,
-  options: { velocityLimit?: number; accelerationLimit?: number; timestep?: number } = {},
+  options: {
+    /** rad/s, one value for all joints or one per joint. */
+    velocityLimit?: number | readonly number[];
+    /** rad/s^2, one value for all joints or one per joint. */
+    accelerationLimit?: number | readonly number[];
+    /** rad/s^3, one value for all joints or one per joint. Optional. */
+    jerkLimit?: number | readonly number[];
+    timestep?: number;
+  } = {},
 ): TrajectoryPoint[] {
-  const velocityLimit = options.velocityLimit ?? Math.PI;
-  const accelerationLimit = options.accelerationLimit ?? 2 * Math.PI;
+  const per = (v: number | readonly number[] | undefined, i: number, dflt: number): number => {
+    const x = v === undefined ? dflt : typeof v === "number" ? v : (v[i] ?? dflt);
+    if (!(x > 0) || !Number.isFinite(x)) throw new Error(`Trajectory: limit must be > 0 (joint ${i}: ${x})`);
+    return x;
+  };
   const timestep = options.timestep ?? 0.01;
 
   if (from.length !== to.length) {
@@ -30,9 +41,11 @@ export function generateTrajectory(
   for (let i = 0; i < from.length; i++) {
     const delta = Math.abs(to[i] - from[i]);
     if (delta < 1e-9) continue;
-    const tByVel = (1.875 * delta) / velocityLimit;
-    const tByAcc = Math.sqrt((5.774 * delta) / accelerationLimit);
-    duration = Math.max(duration, tByVel, tByAcc);
+    // Peak values of the quintic: v = 1.875 d/T, a = 5.774 d/T^2, j = 60 d/T^3.
+    const tByVel = (1.875 * delta) / per(options.velocityLimit, i, Math.PI);
+    const tByAcc = Math.sqrt((5.774 * delta) / per(options.accelerationLimit, i, 2 * Math.PI));
+    const tByJerk = options.jerkLimit === undefined ? 0 : Math.cbrt((60 * delta) / per(options.jerkLimit, i, 1));
+    duration = Math.max(duration, tByVel, tByAcc, tByJerk);
   }
   duration = Math.max(duration, 0.5);
 
