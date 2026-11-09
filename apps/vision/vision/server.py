@@ -15,9 +15,11 @@ from .capture import Camera
 from .board import Board, calibrate_from_markers, detect_aruco_marker
 from .config import config
 from .pieces import detect_pieces
+from .observe import Observer
 
 _camera = None
 _board = Board()
+_observer = Observer()
 try:
     _board.load()  # load a saved calibration if present
 except Exception as exc:  # a corrupt calibration file must not stop the service
@@ -82,6 +84,19 @@ class Handler(BaseHTTPRequestHandler):
             self._detect()
         elif self.path == "/stream":
             self._stream()
+        elif self.path == "/observe":  # per-square observation for the brain loop
+            frame = _get_camera().read()
+            self._send_json({"error": "no frame", "squares": {}} if frame is None else _observer.observe(frame, _board))
+        elif self.path == "/frame.jpg":  # one still frame (dataset capture)
+            jpeg = _get_camera().jpeg()
+            if jpeg is None:
+                self.send_error(503, "no frame")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(jpeg)))
+            self.end_headers()
+            self.wfile.write(jpeg)
         else:
             self.send_error(404)
 
