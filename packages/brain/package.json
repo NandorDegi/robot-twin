@@ -1,0 +1,25 @@
+{
+  "name": "@robot/brain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The robot's own decision + self-check loop: observe -> decide -> predict -> act -> verify.",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint src test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@robot/chess": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

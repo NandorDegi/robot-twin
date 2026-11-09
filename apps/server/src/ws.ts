@@ -6,6 +6,7 @@ import { TrajectoryRecorder, replay } from "./record";
 import { ChessSession } from "./chess";
 import type { CalibrationService } from "./calib/service";
 import { sameOrigin } from "./calib/origin";
+import { BrainSession } from "./brain-session";
 
 /**
  * WebSocket bridge between the browser twin and the RobotController.
@@ -24,6 +25,7 @@ export function startWebsocket(controller: RobotController, port: number, opts: 
   const wss = new WebSocketServer({ port, host, maxPayload: 256 * 1024, verifyClient: (info: { req: { headers: import("node:http").IncomingHttpHeaders } }) => sameOrigin(info.req.headers) });
   const recorder = new TrajectoryRecorder();
   const chess = opts.chess ?? new ChessSession(controller);
+  const brain = new BrainSession(controller, (msg) => broadcast(msg));
 
   wss.on("connection", (ws: WebSocket) => {
     send(ws, robotInfo(controller));
@@ -65,6 +67,10 @@ export function startWebsocket(controller: RobotController, port: number, opts: 
           void opts.calib.handle(msg as Parameters<CalibrationService["handle"]>[0]).then((r) => {
             if (!r.ok) send(ws, { type: "error", message: `calibration: ${r.error ?? "failed"}` });
           });
+        return;
+      }
+      if (msg.type === "brain") {
+        brain.handle(msg).catch((err) => send(ws, { type: "error", message: `brain: ${(err as Error).message}` }));
         return;
       }
       void handle(controller, ws, msg, recorder, chess);

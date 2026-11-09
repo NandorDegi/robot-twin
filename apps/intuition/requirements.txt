@@ -1,0 +1,8 @@
+# Intuition sidecar (DeepMind searchless_chess, JAX on CPU).
+# The searchless_chess repo itself is cloned separately (see docs/BRAIN.md).
+jax>=0.4.30        # CPU wheels: pip install jax (no CUDA needed on the NUC)
+dm-haiku>=0.0.12
+orbax-checkpoint>=0.5
+chess>=1.10        # python-chess (GPL-3.0): move generation for the network's action space
+numpy>=1.26
+jaxtyping

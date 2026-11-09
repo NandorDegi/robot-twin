@@ -1,0 +1,13 @@
+[Unit]
+Description=Robot brain - reflection SLM (llama.cpp llama-server, CPU)
+After=network.target
+
+[Service]
+User=@USER@
+# --reasoning-budget: thinking token budget (0 = no thinking; the brain also
+# sends enable_thinking per request). -c: the prompt is short (~600 tokens).
+ExecStart=@PREFIX@/llama.cpp/build/bin/llama-server -m @PREFIX@/models/@GGUF@ --host 127.0.0.1 --port 8090 --jinja -c 4096 -t 4 --reasoning-budget 0 --alias qwen3-1.7b
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -6,6 +6,8 @@ Endpoints:
   GET  /detect      clickable piece overlay for the twin (heuristic or YOLO)
   GET  /board       chess-loop board state: per square "w" | "b" | null
   POST /calibrate   fit the homography from the 4 ArUco corner markers
+  GET  /observe     per-square colour/type/confidence (YOLO or heuristic), vision/observe.py
+  GET  /frame.jpg   one still frame (dataset capture, vision/training)
   POST /reference   save the EMPTY board image used by /board
   /calib/...        the calibration wizard (vision/calib_api.py)
   (GET /calibrate is kept for old clients.)
@@ -23,10 +25,12 @@ from .board import Board, calibrate_from_markers, detect_aruco_marker
 from .config import config
 from .pieces import detect_pieces
 from . import calib_api
+from .observe import Observer
 
 _camera = None
 _reference = None
 _board = Board()
+_observer = Observer()
 try:
     _board.load()  # load a saved calibration if present
 except Exception as exc:  # a corrupt calibration file must not stop the service
@@ -102,6 +106,19 @@ class Handler(BaseHTTPRequestHandler):
             self._board_state("debug" in self.path)
         elif path == "/stream":
             self._stream()
+        elif path == "/observe":  # per-square observation for the brain loop
+            frame = _get_camera().read()
+            self._send_json({"error": "no frame", "squares": {}} if frame is None else _observer.observe(frame, _board))
+        elif path == "/frame.jpg":  # one still frame (dataset capture)
+            jpeg = _get_camera().jpeg()
+            if jpeg is None:
+                self.send_error(503, "no frame")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(jpeg)))
+            self.end_headers()
+            self.wfile.write(jpeg)
         else:
             self.send_error(404)
 

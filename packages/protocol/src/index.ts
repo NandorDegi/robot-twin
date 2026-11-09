@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { calibClientSchemas, type CalibServerMessage } from "./calibration";
+import { brainCommandSchema, type BrainServerMessage } from "./brain";
+
+export * from "./brain";
 
 export * from "./calibration";
 
@@ -95,6 +98,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   syncBoardSchema,
   robotMoveSchema,
   clearFaultSchema,
+  brainCommandSchema,
   ...calibClientSchemas,
 ]);
 
@@ -122,4 +126,5 @@ export type ServerMessage =
       decider: string;
     }
   | CalibServerMessage
+  | BrainServerMessage
   | { type: "error"; message: string };
