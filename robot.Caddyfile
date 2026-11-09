@@ -1,3 +1,5 @@
+# DEVELOPMENT ONLY (Vite dev server). The NUC uses deploy/Caddyfile.
+#
 # Reverse proxy for the Robot Twin app over one HTTPS origin.
 #
 # The twin page (Vite) is proxy-forwarded as the site; the robot WebSocket and
@@ -22,8 +24,9 @@ https://robot:5909 {
     reverse_proxy localhost:3001
   }
 
-  # Vision service (MJPEG stream + detect + calibrate)
-  handle /vision* {
+  # Vision service (MJPEG stream + detect + board). Strip the /vision prefix:
+  # the service serves /stream, /detect, /board at its root.
+  handle_path /vision/* {
     reverse_proxy localhost:8081
   }
 

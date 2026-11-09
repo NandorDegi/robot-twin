@@ -1,18 +1,30 @@
-# robot-twin reverse proxy (Caddy).
+# robot-twin reverse proxy (Caddy), installed to /etc/caddy/Caddyfile.
 #
-# Serves the built twin, and proxies /robot-ws (to the ws_bridge) and /vision
-# (to the vision service) on the SAME origin, so the twin works with no CORS /
-# host setting. The twin connects to `${location.origin}/robot-ws` and /vision.
+# One origin for the browser: the built twin, /robot-ws (robot server) and
+# /vision/* (vision service, prefix stripped). The backends listen on
+# 127.0.0.1 only; this is the only way in from the LAN.
 #
-# Listens on :5909 (all interfaces, HTTP). Open http://<nuc-ip>:5909 in a browser.
-# For HTTPS, swap the site address for a domain and add tls (see DEPLOY.md).
-:5909 {
-	root * /opt/robot-twin/twin
-	file_server
+# Access: only TWIN_ALLOWED_CIDRS (from /etc/robot-twin/caddy.env). There is no
+# login: anyone in those networks can drive the robot once it is enabled.
+# Keep the list to the operator network. For HTTPS, use a site name and
+# `tls internal` (the browser must trust Caddy's CA).
+:{$TWIN_PORT:5909} {
+	@denied not remote_ip {$TWIN_ALLOWED_CIDRS:127.0.0.1/32}
+	respond @denied "forbidden" 403
 
-	# WebSocket to the ws_bridge (twin -> MoveIt). Caddy handles the upgrade.
-	reverse_proxy /robot-ws* localhost:3001
+	handle /robot-ws* {
+		reverse_proxy 127.0.0.1:3001
+	}
 
-	# Vision service (camera stream + detection).
-	reverse_proxy /vision/* localhost:8081
+	# The vision service serves /stream, /detect, /board at its root.
+	handle_path /vision/* {
+		reverse_proxy 127.0.0.1:8081 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		root * /opt/robot-twin/twin
+		file_server
+	}
 }

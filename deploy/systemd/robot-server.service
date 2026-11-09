@@ -1,0 +1,25 @@
+[Unit]
+Description=robot-twin robot server (controller, chess loop, twin WebSocket)
+After=robot-franka.service robot-vision.service
+Wants=robot-franka.service robot-vision.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=robot-twin
+Group=robot-twin
+EnvironmentFile=/etc/robot-twin/robot-twin.env
+WorkingDirectory=/opt/robot-twin/app/apps/server
+ExecStart=/opt/robot-twin/node/bin/node --import tsx src/index.ts
+# On restart the controller starts DISABLED and reads the robot pose again.
+Restart=on-failure
+RestartSec=3
+Nice=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

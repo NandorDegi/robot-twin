@@ -1,0 +1,26 @@
+[Unit]
+Description=robot-twin vision service (camera, board calibration, board state)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=robot-twin
+Group=robot-twin
+SupplementaryGroups=video
+EnvironmentFile=/etc/robot-twin/robot-twin.env
+Environment=PYTHONPATH=/opt/robot-twin/app/apps/vision
+WorkingDirectory=/var/lib/robot-twin/vision
+ExecStart=/opt/robot-twin/vision-venv/bin/python -m vision
+Restart=on-failure
+RestartSec=5
+# Keep the camera work away from the real-time control thread.
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/robot-twin/vision
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

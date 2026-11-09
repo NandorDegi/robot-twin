@@ -2,8 +2,8 @@
 Franka Panda (FER) control bridge: the ONE process that commands the arm.
 
 It connects to the Panda through the Franka Control Interface (FCI) with
-`panda-py` (Python bindings that bundle libfranka 0.9.2, the libfranka line for
-Panda system images 4.2.x). The Node robot server (`FrankaAdapter`) calls the
+`panda-py` (panda-python 1.1.1; its PyPI wheel bundles libfranka 0.9.2, the
+libfranka line for Panda system images 4.2.x). The Node robot server (`FrankaAdapter`) calls the
 small HTTP API below on the loopback interface.
 
 Single commander, by construction:
@@ -77,6 +77,8 @@ class Settings:
         self.port = int(os.environ.get("FRANKA_BRIDGE_PORT", "3002"))
         self.dry_run = _env_bool("FRANKA_DRY_RUN", True)
         self.use_gripper = _env_bool("FRANKA_GRIPPER", True)
+        # enforce (default) | ignore. Only use "ignore" for a bench test without the RT kernel.
+        self.realtime = os.environ.get("FRANKA_REALTIME", "enforce")
         self.speed_factor = _env_float("FRANKA_SPEED_FACTOR", 0.1)
         self.speed_factor_max = min(_env_float("FRANKA_SPEED_FACTOR_MAX", 0.3), 0.5)
         self.lease_timeout_s = _env_float("FRANKA_LEASE_TIMEOUT_S", 1.0)
@@ -251,17 +253,24 @@ class DryRunBackend:
 class PandaBackend:
     """Real Panda through panda-py.
 
-    The panda-py API names used here (Panda, move_to_joint_position,
-    get_state, get_robot().stop, stop_controller, recover, libfranka.Gripper)
-    must be checked against the installed panda-py once (see
-    docs/NUC-BRINGUP.md, step "panda-py API check").
+    The API names used here were checked against the type stubs of
+    panda-python 1.1.1 (the version pinned in requirements.txt): Panda(hostname,
+    realtime_config=...), move_to_joint_position(positions, speed_factor) -> bool,
+    get_state().q / .robot_mode, get_robot().stop(), stop_controller(),
+    recover(), libfranka.Gripper.move/grasp/read_once.
+
+    panda-py's default realtime_config is kIgnore: without real-time rights it
+    would run the 1 kHz loop with normal scheduling and fail with
+    communication reflexes. The bridge uses kEnforce (FRANKA_REALTIME=enforce),
+    so it fails at connect time instead.
     """
 
     name = "panda-py"
 
-    def __init__(self, host: str, use_gripper: bool) -> None:
+    def __init__(self, host: str, use_gripper: bool, realtime: str = "enforce") -> None:
         self._host = host
         self._use_gripper = use_gripper
+        self._realtime = realtime
         self.panda = None
         self.gripper = None
         self._last_q: Optional[List[float]] = None
@@ -272,7 +281,8 @@ class PandaBackend:
             from panda_py import libfranka
         except ImportError as exc:
             raise RuntimeError("panda-py is not installed: pip install -r apps/franka/requirements.txt") from exc
-        self.panda = panda_py.Panda(self._host)
+        rt = libfranka.RealtimeConfig.kIgnore if self._realtime == "ignore" else libfranka.RealtimeConfig.kEnforce
+        self.panda = panda_py.Panda(self._host, realtime_config=rt)
         if self._use_gripper:
             self.gripper = libfranka.Gripper(self._host)
 
@@ -560,7 +570,7 @@ def main() -> None:
         sys.exit(2)
     lock = take_lock(s.lock_file)  # noqa: F841 - keep the lock open
     limits = load_limits(s.limits_file)
-    backend = DryRunBackend(limits) if s.dry_run else PandaBackend(s.robot_host, s.use_gripper)
+    backend = DryRunBackend(limits) if s.dry_run else PandaBackend(s.robot_host, s.use_gripper, s.realtime)
     bridge = Bridge(s, backend, limits)
     print(f"[franka] backend={backend.name} dry_run={s.dry_run} robot={s.robot_host if not s.dry_run else '-'} "
           f"speed={s.speed_factor} (max {s.speed_factor_max})", flush=True)

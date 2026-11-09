@@ -1,0 +1,21 @@
+[Unit]
+Description=robot-twin OPTIONAL ROS 2 stack (franka_ros2 + MoveIt + ws_bridge)
+After=network-online.target robot-cpu-performance.service
+Wants=network-online.target
+# Only one process may command the arm.
+Conflicts=robot-franka.service
+
+[Service]
+Type=simple
+User=robot-twin
+SupplementaryGroups=realtime
+EnvironmentFile=/etc/robot-twin/robot-twin.env
+# use_fake_hardware stays true until you change it here on purpose.
+ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source /home/robot-twin/ros_ws/install/setup.bash && exec ros2 launch ws_bridge stack.launch.py robot_ip:=$FRANKA_HOST use_fake_hardware:=true'
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+Restart=no
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

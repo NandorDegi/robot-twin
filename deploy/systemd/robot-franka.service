@@ -1,0 +1,39 @@
+[Unit]
+Description=robot-twin Franka bridge (panda-py, the only process that commands the Panda)
+Documentation=file:///opt/robot-twin/app/docs/NUC-BRINGUP.md
+After=network-online.target robot-cpu-performance.service
+Wants=network-online.target
+# Only one process may command the arm.
+Conflicts=robot-ros.service
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=robot-twin
+Group=robot-twin
+SupplementaryGroups=realtime
+EnvironmentFile=/etc/robot-twin/robot-twin.env
+WorkingDirectory=/opt/robot-twin/app/apps/franka
+ExecStart=/opt/robot-twin/franka-venv/bin/python -I /opt/robot-twin/app/apps/franka/franka_bridge.py
+# libfranka runs its 1 kHz control thread with SCHED_FIFO and refuses to start
+# without real-time rights (RealtimeConfig::kEnforce). PAM limits.conf does not
+# apply to systemd services: set the limits here.
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+# Lock file for the single-instance check (FRANKA_LOCK_FILE).
+RuntimeDirectory=robot-twin
+RuntimeDirectoryMode=0750
+# A restart reconnects but never moves the arm: motion needs a lease, a goal
+# and an operator who enables the robot in the twin.
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
