@@ -89,7 +89,7 @@ board that does not match the game.
 | NUC FCI address | your choice, same /24 | `FCI_HOST_CIDR`, e.g. 172.16.0.1/24. |
 | Operator network | your LAN | `TWIN_ALLOWED_CIDRS` in `/etc/robot-twin/caddy.env`. |
 | Camera index | `v4l2-ctl --list-devices` | `VISION_CAMERA_INDEX`. |
-| Board position | measured in step 10 | `packages/chess/src/board.ts` and `VISION_BOARD_*`. |
+| Board position | measured in step 10 (Calibrate wizard) | saved in `VISION_CALIBRATION_FILE`. |
 | Observe pose | step 12 | `CHESS_OBSERVE_POSE`, a pose that does not hide the board. |
 | Ubuntu Pro token | ubuntu.com/pro (free personal tier) | For the real-time kernel. It is a secret: type it only into `pro attach`, never into a file. |
 
@@ -312,8 +312,10 @@ Check, in this order:
 3. Press **Enable**, then **Home**: the arm goes to the ready pose.
 4. Move one joint slider and release it: one motion.
 5. Type `e4`, **Play**: approach, descend, close, lift, move, place, observe
-   pose. The loop line says `e4 done` (or a vision fault if the camera is not
-   calibrated yet: then set `CHESS_REQUIRE_VISION=0` only for this dry-run).
+   pose. The loop line says `e4 done` (or "refused: no valid calibration" /
+   a vision fault if the camera is not calibrated yet: then set
+   `CHESS_REQUIRE_CALIBRATION=0` and `CHESS_REQUIRE_VISION=0` only for this
+   dry-run).
 6. Press **E-Stop** during a motion: the motion stops, the robot is disabled.
 7. Close the browser tab during a motion: the server log says
    `last client disconnected: stopping and disabling the robot`.
@@ -383,78 +385,136 @@ gripper width; run homing from Desk.
 
 ---
 
-## 10. Board placement (robot frame)
+## 10. Calibration with the wizard (camera, board, robot frame)
 
-The kinematics are the official Panda values. You must measure only where the
-board is relative to the robot base.
+The **Calibrate** wizard in the twin does the whole calibration: camera, board
+geometry, empty-board reference, detection thresholds, the board pose in the
+robot frame, save and final check. Open it with the **Calibrate** button in the
+main panel (or `http://<nuc-lan-ip>:5909/#calibrate`). Each step can be done
+again at any time; the steps you do not repeat keep their values.
 
-1. With the robot **disabled** in the twin and FCI deactivated in Desk,
-   hand-guide the TCP (center between the fingertips) onto the outer corner
-   of square **a1**. Activate FCI again.
-2. Read the TCP position:
+**The chess loop refuses to run without a valid saved calibration** (the twin
+shows "Chess loop blocked: ..." in the chess section). Valid means: saved by the
+wizard, orientation confirmed, and the final check of that revision passed.
+For the first dry-run without a camera (section 7) set
+`CHESS_REQUIRE_CALIBRATION=0` and `CHESS_REQUIRE_VISION=0`, and remove both
+again afterwards.
 
-   ```bash
-   sudo systemctl stop robot-server robot-franka
-   sudo -u robot-twin /opt/robot-twin/franka-venv/bin/python -I /opt/robot-twin/app/apps/franka/fci_check.py $FRANKA_HOST
-   ```
+Where the result goes: `VISION_CALIBRATION_FILE`
+(`/var/lib/robot-twin/vision/calibration.json`). The vision service writes it;
+the robot server reads the same file. It is the one source of truth for the
+board pose: `BOARD` in `packages/chess/src/board.ts` and `VISION_BOARD_*` are
+only the defaults before the first calibration. Every save is a new revision in
+`/var/lib/robot-twin/vision/calibration.d/` (file and reference image), so you
+can roll back. Both services use a new calibration at once, without a restart.
 
-   Note `TCP in the base frame (mm): X Y Z`. Optional: repeat for the h1
-   corner (board yaw).
-3. Convert and check reachability (on the NUC or the dev machine):
+Before you start: camera mounted above the board, looking down, the whole board
+visible; the light as it will be during a game. If you need another observe
+pose than the default, set `CHESS_OBSERVE_POSE` first (section 12, item 1).
 
-   ```bash
-   cd /opt/robot-twin/app && PATH=/opt/robot-twin/node/bin:$PATH \
-     pnpm --filter server calibrate --from-robot X Y Z [--h1 X Y Z]
-   ```
+1. **Camera.** Choose the camera and the resolution, press **Apply**. When the
+   image looks right, tick the **Exposure**, **White balance** and **Focus**
+   locks (UVC controls; "not supported" when the camera has none). Expected:
+   brightness between 60 and 200, focus "sharp", clipped under 1 %.
+2. **Board geometry.** Put the four ArUco markers (`DICT_4X4_50`, ids 0-3) with
+   their **centre** on the outer corners: **0 = a8, 1 = h8, 2 = a1, 3 = h1**,
+   or show an empty board. Press **Detect automatically**. The grid and the
+   corner names are drawn on the live image. Expected: reprojection error under
+   1.5 px mean, "a1 is dark: yes".
+   - If nothing is found: **Click 4 corners** and click the outer corners in
+     the order the guidance shows (a1, h1, h8, a8, counterclockwise on the
+     screen). A mirrored order is refused.
+   - **Orientation:** the green dot must be on a1 and the thick white edge on
+     rank 1 (the White side). If not, **Pick the a1 corner on the image**.
+     a1 is always a dark square; the wizard warns when it is not. Then press
+     **Confirm orientation**. This fixes the rank/file mapping.
+   - "The camera image is mirrored" only for a camera with a mirror setting.
+3. **Empty-board reference.** Remove all pieces and the markers. Press
+   **Move arm to observe pose** (robot enabled), then **Capture reference**
+   (10 frames, averaged). Read the warnings and the per-square brightness:
+   glare, shadow, noise or "uneven" squares. Fix the light and capture again
+   until there is no warning.
+4. **Detection.** Set up the start position. Press **Auto-tune for the start
+   position**. Expected: `64/64 squares, 32/32 pieces` and positive margins.
+   Adjust the sliders only if needed. **Test:** press **Start test**, make a
+   legal move on the board, press **Detect move**; the wizard names the move.
+   Do this for three or four moves (a capture too).
+5. **Robot frame (board pose in the robot base frame).** Do this in dry-run
+   first (`FRANKA_DRY_RUN=1`), then with the real robot at
+   `FRANKA_SPEED_FACTOR=0.05`.
 
-   Expected: the twin `BOARD.origin` and `reachable: 65/65` (64 squares + tray,
-   each with the hand pointing down at grab height and 100 mm above).
-4. Put the printed values into `packages/chess/src/board.ts` (BOARD.origin,
-   rotationDeg) and into `/etc/robot-twin/robot-twin.env`
-   (`VISION_BOARD_ORIGIN_X/Y/Z`, `VISION_BOARD_ROTATION_DEG`). Restart
-   `robot-server` and `robot-vision`.
+   > **The arm moves only when you press a button.** The robot must be
+   > enabled. For the real robot tick "I hold the user stop" first and keep
+   > the user stop in your hand. Each jog is at most 10 mm.
 
-If squares are unreachable: move the board (center about 450 mm in front of
-the base) or lower `grabHeight` only if the pieces allow it.
-
----
-
-## 11. Vision calibration
-
-1. Mount the camera above the board, looking down, the whole board visible.
-2. Print four ArUco markers (`DICT_4X4_50`, ids 0-3). Put the **center** of
-   each marker on an outer board corner: **0 = a8, 1 = h8, 2 = a1, 3 = h1**.
-3. Calibrate (writes `/var/lib/robot-twin/vision/calibration.json`):
-
-   ```bash
-   curl -s -X POST http://127.0.0.1:8081/calibrate      # "fitted": true, 4 markers
-   ```
-
-4. Remove the markers if they cover squares. With the **empty board** and the
-   arm in the observe pose, save the reference image:
-
-   ```bash
-   curl -s -X POST http://127.0.0.1:8081/reference      # "ok": true
-   ```
-
-5. Set up the start position and check:
-
-   ```bash
-   curl -s 'http://127.0.0.1:8081/board?debug' | python3 -m json.tool
-   ```
-
-   Expected: ranks 1-2 `"w"`, ranks 7-8 `"b"`, the rest `null`. `scores` is
-   the fraction of changed pixels per square.
+   - Set **Hover height**: the height of the TCP (centre between the
+     fingertips) above the board surface when you record, e.g. 20 mm with a
+     gauge block.
+   - **Go above a1**: the hand goes, pointing down, 30 mm above the hover
+     height over a1 of the current board pose. Lower it with **-Z** and centre
+     it over the middle of a1 with **±X/±Y** (robot base frame: X forward, Y
+     left, Z up). Press **Record a1**.
+   - The same for **h1** and **h8**.
+   - **Fit board pose**. Expected: residual under 2 mm, `Reachable 65/65`, no
+     warning (mirrored order, tilted board, square size). The wizard shows the
+     difference to the current pose.
+   - Instead of the touch-off you can type the a1 **corner** in the robot base
+     frame (for example from `fci_check.py`, as in the old procedure), the yaw
+     and the square size, and press **Use manual pose**.
+   - Without a robot server (twin only) the twin's own simulated arm is used,
+     so you can practise the whole wizard on a laptop.
+6. **Save and validate.** Write an operator note, press **Save calibration**.
+   Set up the **start position**, press **Move arm to observe pose**, then
+   **Run final check**. Expected: `PASSED · pieces 32/32 · squares 64/64 ·
+   reachable 65/65` and "Chess loop: allowed". If it fails, the wrong squares
+   or the unreachable squares are listed: fix the cause, repeat the step, save
+   again and check again.
 
 | Failure | Action |
 |---|---|
-| `fitted: false` | Fewer than 4 markers seen: light, focus, marker size, ids. |
-| ranks or files swapped | Markers in the wrong corners (0 must be a8). |
-| empty squares seen as occupied | Light changed since the reference: retake it; raise `VISION_DIFF_THRESHOLD` or `VISION_OCCUPIED_FRACTION`. |
-| wrong colour | Tune `VISION_WHITE_THRESHOLD` (mean grey of a piece). |
+| no board found | Light, focus, all 4 markers visible, ids 0-3; or click the corners. |
+| "a1 looks LIGHT" | Wrong a1 corner: pick the dark corner on the White side. |
+| "the corners are mirrored" | Click in the order a1, h1, h8, a8 (counterclockwise on the screen). |
+| reference warnings | Glare: move the light or use a diffuser, lower the exposure. Shadow: move the light or the arm. |
+| auto-tune below 64/64 | Retake the reference with the same light; check that the pieces contrast with both square colours. |
+| fit warns "MIRRORED" | You recorded the points in the wrong order or at the wrong squares. Clear points, repeat. |
+| residual > 2 mm | Re-touch more carefully, slower jogs (1-2 mm). Check that the board does not move. |
+| squares unreachable | Move the board closer to the base (centre about 450 mm in front of it). |
+| final check fails | The camera or the light moved since the reference: repeat steps 3-4, save, check. |
 
-Check three different positions before you trust the camera. The camera and
-the light must not move after the reference; if they do, repeat 3-5.
+Check three different positions in the move test before you trust the camera.
+If the camera, the light or the board moves later, repeat the affected steps
+(2-6), save and run the final check again.
+
+---
+
+## 11. Calibration files, rollback and checks
+
+- **Versions and rollback:** wizard step 6 lists every revision. **Roll back**
+  makes an old revision active again (as a new revision; history stays). The
+  final check of the old revision carries over.
+- **Status from the shell:**
+
+  ```bash
+  curl -s http://127.0.0.1:8081/calib/status | python3 -m json.tool   # revision, complete, reasons
+  curl -s 'http://127.0.0.1:8081/board?debug' | python3 -m json.tool  # live board state
+  ```
+
+- **Reachability of the saved pose** (the same check as the final check):
+
+  ```bash
+  cd /opt/robot-twin/app && PATH=/opt/robot-twin/node/bin:$PATH \
+    VISION_CALIBRATION_FILE=/var/lib/robot-twin/vision/calibration.json \
+    pnpm --filter server calibrate --check
+  ```
+
+- The old `POST /calibrate` and `POST /reference` endpoints refuse to change a
+  wizard calibration. Use the wizard.
+- The file holds: camera source, resolution and locked controls (intrinsics are
+  not computed), the homography and the image corners, the orientation, the
+  reference image path, the thresholds, the board pose (twin frame and the a1
+  corner in the robot base frame), the operator note, the date and the result
+  of the final check.
 
 ---
 
@@ -509,3 +569,4 @@ install libfranka 0.9.2 system-wide, and build the workspace. Never run
 | Recover after reflex | `sudo bash /opt/robot-twin/app/deploy/franka-recover.sh` |
 | Preflight | `sudo bash /opt/robot-twin/app/deploy/preflight.sh` |
 | Board state | `curl -s '127.0.0.1:8081/board?debug'` |
+| Calibration status | `curl -s 127.0.0.1:8081/calib/status` (wizard: twin -> Calibrate) |
