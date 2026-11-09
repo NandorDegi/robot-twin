@@ -76,6 +76,22 @@ importers:
         specifier: ^5.4.11
         version: 5.4.21(@types/node@22.20.5)
 
+  packages/brain:
+    dependencies:
+      '@robot/chess':
+        specifier: workspace:*
+        version: link:../chess
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@22.20.5)
+
   packages/chess:
     devDependencies:
       typescript:
