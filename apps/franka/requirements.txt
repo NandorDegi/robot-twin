@@ -1,4 +1,14 @@
-# Franka FCI bridge requirements (run on the workstation wired to the Panda).
-# See https://github.com/JeanElsner/panda-py for libfranka version matching.
-# For a FER/Panda, panda-python ships libfranka 0.9.2 (system >= 4.2.1).
-panda-python>=1.1.1
+# Franka FCI bridge requirements (installed on the NUC by deploy/install.sh).
+#
+# panda-py (PyPI: panda-python) bundles libfranka. The PyPI wheels are built
+# against libfranka 0.9.2, which is the libfranka line for a Panda (FER) with
+# system image 4.2.x. A Panda with an OLDER system image (4.0.x/4.1.x, or 3.x)
+# needs a different libfranka: check the Franka compatibility table, and
+# upgrade the robot system image in Desk, or build panda-py from source.
+#
+# Do not install this next to a different libfranka-based client: only the
+# bridge may connect to the robot.
+#
+# After the first install on the NUC, freeze the exact versions:
+#   /opt/robot-twin/franka-venv/bin/pip freeze > /etc/robot-twin/franka-constraints.txt
+panda-python

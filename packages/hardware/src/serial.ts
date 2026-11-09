@@ -15,6 +15,7 @@ import type { RobotAdapter } from "./adapter";
  */
 export class SerialAdapter implements RobotAdapter {
   readonly name = "serial";
+  readonly isReal = true;
 
   constructor(private readonly port = "/dev/ttyUSB0") {}
 

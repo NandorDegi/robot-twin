@@ -7,6 +7,7 @@ import type { RobotAdapter } from "./adapter";
  */
 export class SimulatedAdapter implements RobotAdapter {
   readonly name = "simulated";
+  readonly isReal = false;
 
   constructor(
     private readonly jointCount: number,

@@ -1,3 +1,4 @@
+import limitsJson from "../panda-limits.json";
 import { mat4Identity, mat4Mul, mat4RotX, mat4RotY, mat4RotZ, mat4Translation } from "@robot/kinematics";
 import type { KinematicChain, KinematicJoint, Mat4 } from "@robot/kinematics";
 
@@ -94,11 +95,11 @@ export function buildChain(config: RobotConfig): KinematicChain {
  * franka_description URDF, which are the same numbers.
  */
 export const PANDA_LIMITS = {
-  qMin: [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973],
-  qMax: [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973],
-  dqMax: [2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61],
-  ddqMax: [15, 7.5, 10, 12.5, 15, 20, 20],
-  dddqMax: [7500, 3750, 5000, 6250, 7500, 10000, 10000],
+  qMin: limitsJson.qMin,
+  qMax: limitsJson.qMax,
+  dqMax: limitsJson.dqMax,
+  ddqMax: limitsJson.ddqMax,
+  dddqMax: limitsJson.dddqMax,
 } as const;
 
 /**
@@ -113,7 +114,7 @@ export const PANDA_LIMIT_MARGIN_DEG = 2;
  * as the neutral start: arm upright, hand pointing down. Use it for "home".
  * Do NOT use the midpoint of the joint ranges: that is not a meaningful pose.
  */
-export const PANDA_READY_POSE: readonly number[] = [0, -Math.PI / 4, 0, (-3 * Math.PI) / 4, 0, Math.PI / 2, Math.PI / 4];
+export const PANDA_READY_POSE: readonly number[] = limitsJson.readyPose;
 
 /**
  * Distance (mm) from the flange (panda_link8) to the Franka Hand TCP, along
@@ -121,7 +122,7 @@ export const PANDA_READY_POSE: readonly number[] = [0, -Math.PI / 4, 0, (-3 * Ma
  * the Franka Hand. The hand is also rotated -45 deg about Z; this model does
  * not need that rotation because the tool-down goal leaves the yaw free.
  */
-export const PANDA_TCP_OFFSET_MM = 103.4;
+export const PANDA_TCP_OFFSET_MM = limitsJson.tcpOffsetM * 1000;
 
 const RAD2DEG = 180 / Math.PI;
 
