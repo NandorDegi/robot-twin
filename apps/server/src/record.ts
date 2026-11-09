@@ -48,27 +48,33 @@ export class TrajectoryRecorder {
 }
 
 /**
- * Replays a list of recorded steps through the controller. Motion is gated by
- * the controller's enable state, so the queue waits until it is enabled.
+ * Replays a list of recorded steps through the controller, one at a time:
+ * each motion must finish (and succeed) before the next starts. The replay
+ * stops at the first failure. Motion is gated by the controller's enable state.
  */
 export async function replay(
   controller: RobotController,
   steps: RecordedStep[],
-): Promise<void> {
+): Promise<{ ok: boolean; error?: string }> {
   for (const step of steps) {
     switch (step.type) {
-      case "target":
-        await controller.setTarget(step.position);
+      case "target": {
+        const r = await controller.moveToPosition(step.position, controller.isReal ? "down" : undefined);
+        if (!r.ok) return { ok: false, error: `replay stopped: ${r.error ?? "motion failed"}` };
         break;
-      case "gripper":
-        await controller.setGripper(step.open);
+      }
+      case "gripper": {
+        const r = await controller.setGripper(step.open);
+        if (!r.ok) return { ok: false, error: `replay stopped: ${r.error ?? "gripper failed"}` };
         break;
+      }
       case "wait":
-        await sleep(step.ms);
+        await sleep(Math.min(step.ms, 60000));
         break;
     }
     if (step.type === "target" && step.wait) await sleep(step.wait);
   }
+  return { ok: true };
 }
 
 function sleep(ms: number): Promise<void> {

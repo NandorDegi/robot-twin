@@ -9,15 +9,33 @@ import { ChessSession } from "./chess";
  * WebSocket bridge between the browser twin and the RobotController.
  * Client messages are validated with zod; the server pushes state updates.
  */
-export function startWebsocket(controller: RobotController, port: number): WebSocketServer {
-  const wss = new WebSocketServer({ port, host: "0.0.0.0" });
+export interface WebsocketOptions {
+  /** Bind address. Default 127.0.0.1: Caddy is the only way in from the LAN. */
+  host?: string;
+  chess?: ChessSession;
+}
+
+export function startWebsocket(controller: RobotController, port: number, opts: WebsocketOptions = {}): WebSocketServer {
+  const host = opts.host ?? "127.0.0.1";
+  const wss = new WebSocketServer({ port, host, maxPayload: 256 * 1024 });
   const recorder = new TrajectoryRecorder();
-  const chess = new ChessSession(controller);
+  const chess = opts.chess ?? new ChessSession(controller);
 
   wss.on("connection", (ws: WebSocket) => {
     send(ws, robotInfo(controller));
     send(ws, stateMessage(controller));
     send(ws, chessMessage(chess));
+    send(ws, loopMessage(chess));
+
+    // Deadman: when the last twin disconnects, nobody watches the arm. Stop
+    // and disable it; a person must enable it again after reconnecting.
+    ws.on("close", () => {
+      const open = [...wss.clients].filter((c) => c !== ws && c.readyState === 1).length;
+      if (open === 0 && (controller.isEnabled || controller.isMoving)) {
+        console.warn("[ws] last client disconnected: stopping and disabling the robot");
+        controller.emergencyStop();
+      }
+    });
 
     ws.on("message", (data) => {
       let parsed: unknown;
@@ -43,13 +61,16 @@ export function startWebsocket(controller: RobotController, port: number): WebSo
     }
   };
   controller.subscribe(() => broadcast(stateMessage(controller)));
-  chess.subscribe(() => broadcast(chessMessage(chess)));
+  chess.subscribe(() => {
+    broadcast(chessMessage(chess));
+    broadcast(loopMessage(chess));
+  });
 
   wss.on("error", (err) => {
     console.error("[ws] error:", err);
   });
 
-  console.log(`[ws] listening on ws://0.0.0.0:${port}`);
+  console.log(`[ws] listening on ws://${host}:${port}`);
   return wss;
 }
 
@@ -63,6 +84,7 @@ async function handle(
   switch (msg.type) {
     case "setTarget": {
       const ok = await controller.setTarget(msg.target.position, msg.target.orientation);
+      if (!ok && controller.isEnabled) send(ws, { type: "error", message: "target not reachable (not executed)" });
       if (recorder.isRecording) recorder.target(msg.target.position);
       send(ws, {
         type: "target",
@@ -78,28 +100,34 @@ async function handle(
       if (rejected) send(ws, { type: "error", message: `joint state rejected: ${rejected}` });
       break;
     }
-    case "gripper":
+    case "gripper": {
       if (recorder.isRecording) recorder.gripper(msg.open);
-      await controller.setGripper(msg.open);
+      const r = await controller.setGripper(msg.open);
+      if (!r.ok) send(ws, { type: "error", message: `gripper: ${r.error ?? "failed"}` });
       break;
+    }
     case "setEnabled":
       controller.setEnabled(msg.enabled);
       break;
     case "estop":
       controller.emergencyStop();
       break;
-    case "home":
-      await controller.home();
+    case "home": {
+      const r = await controller.home();
+      if (!r.ok) send(ws, { type: "error", message: `home: ${r.error ?? "failed"}` });
       break;
+    }
     case "recordStart":
       recorder.start();
       break;
     case "recordStop":
       send(ws, { type: "recorded", steps: recorder.stop() });
       break;
-    case "replay":
-      await replay(controller, msg.steps);
+    case "replay": {
+      const r = await replay(controller, msg.steps);
+      if (!r.ok) send(ws, { type: "error", message: r.error ?? "replay failed" });
       break;
+    }
     case "playSan": {
       const res = await chess.playSan(msg.san);
       if (!res.ok) send(ws, { type: "error", message: res.error ?? "invalid move" });
@@ -110,6 +138,19 @@ async function handle(
       break;
     case "resetGame":
       chess.reset();
+      break;
+    case "syncBoard": {
+      const res = await chess.syncBoard();
+      if (!res.ok) send(ws, { type: "error", message: res.error ?? "sync failed" });
+      break;
+    }
+    case "robotMove": {
+      const res = await chess.robotTurn();
+      if (!res.ok) send(ws, { type: "error", message: res.error ?? "robot move failed" });
+      break;
+    }
+    case "clearFault":
+      chess.clearFault();
       break;
   }
 }
@@ -134,6 +175,11 @@ function chessMessage(chess: ChessSession): ServerMessage {
     opponentEnabled: chess.opponentEnabled,
     elo: chess.eloLevel,
   };
+}
+
+function loopMessage(chess: ChessSession): ServerMessage {
+  const st = chess.loopStatus;
+  return { type: "loop", ...st, decider: chess.deciderName };
 }
 
 function robotInfo(controller: RobotController): ServerMessage {

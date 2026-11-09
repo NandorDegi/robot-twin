@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const vec3Schema = z.tuple([z.number(), z.number(), z.number()]);
+export const vec3Schema = z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]);
 export type Vec3 = z.infer<typeof vec3Schema>;
 
 export const setTargetSchema = z.object({
@@ -13,7 +13,7 @@ export const setTargetSchema = z.object({
 
 export const setJointStateSchema = z.object({
   type: z.literal("setJointState"),
-  q: z.array(z.number()),
+  q: z.array(z.number().finite()).max(16),
 });
 
 export const gripperSchema = z.object({
@@ -69,6 +69,13 @@ export const resetGameSchema = z.object({
   type: z.literal("resetGame"),
 });
 
+/** Chess loop: read the board with the camera (infer the human move, then play). */
+export const syncBoardSchema = z.object({ type: z.literal("syncBoard") });
+/** Chess loop: the decider chooses a move for the side to move and the robot plays it. */
+export const robotMoveSchema = z.object({ type: z.literal("robotMove") });
+/** Chess loop: a person fixed the board; leave the fault state. */
+export const clearFaultSchema = z.object({ type: z.literal("clearFault") });
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   setTargetSchema,
   setJointStateSchema,
@@ -82,6 +89,9 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   playSanSchema,
   setOpponentSchema,
   resetGameSchema,
+  syncBoardSchema,
+  robotMoveSchema,
+  clearFaultSchema,
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
@@ -99,4 +109,12 @@ export type ServerMessage =
   | { type: "piece"; piece: { color: string; type: string; square: [number, number] } }
   | { type: "recorded"; steps: RecordedStep[] }
   | { type: "chess"; fen: string; turn: string; lastSan: string; check: boolean; opponentEnabled: boolean; elo: number }
+  | {
+      type: "loop";
+      stage: "idle" | "observing" | "deciding" | "moving" | "verifying" | "manual" | "fault";
+      message: string;
+      mismatches: string[];
+      verified: boolean;
+      decider: string;
+    }
   | { type: "error"; message: string };
