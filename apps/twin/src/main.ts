@@ -9,6 +9,7 @@ import { buildBoard } from "./chessboard";
 import { useTwin } from "./store";
 import { connect, type TwinSocket } from "./net";
 import { LocalSim } from "./localsim";
+import { mountBrainPanel } from "./brainpanel";
 import type { ClientMessage } from "@robot/protocol";
 
 const chain = buildChain(defaultArmConfig());
@@ -255,6 +256,7 @@ try {
 } catch {
   socket = null;
 }
+mountBrainPanel(WS_URL);
 
 // Live camera feed from the vision service (MJPEG).
 const feedImg = document.getElementById("feedImg") as HTMLImageElement;
