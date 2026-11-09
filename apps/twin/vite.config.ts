@@ -14,7 +14,8 @@ export default defineConfig({
       // Vision service (detect / stream / calibrate). Strip the /vision prefix.
       "/vision": {
         target: process.env.TWIN_VISION_TARGET ?? "http://localhost:8081",
-        changeOrigin: true,
+        // keep the browser's Host: the vision service's same-origin rule compares it with Origin
+        changeOrigin: false,
         rewrite: (p) => p.replace(/^\/vision/, ""),
       },
     },

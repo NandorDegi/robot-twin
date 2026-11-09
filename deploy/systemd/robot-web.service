@@ -1,0 +1,18 @@
+[Unit]
+Description=robot-twin web UI (Vite server on :5909, proxies /robot-ws and /vision; no Caddy)
+After=network-online.target robot-server.service robot-vision.service
+Wants=network-online.target
+
+[Service]
+User=robot-twin
+Group=robot-twin
+WorkingDirectory=/opt/robot-twin/app/apps/twin
+Environment=TWIN_DEV_PORT=5909
+Environment=PATH=/opt/robot-twin/node/bin:/usr/bin:/bin
+ExecStart=/opt/robot-twin/app/apps/twin/node_modules/.bin/vite --host 0.0.0.0 --port 5909 --strictPort
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
