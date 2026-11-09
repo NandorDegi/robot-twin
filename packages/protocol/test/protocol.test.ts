@@ -17,3 +17,28 @@ describe("protocol", () => {
     expect(clientMessageSchema.safeParse(msg).success).toBe(false);
   });
 });
+
+describe("calibration messages", () => {
+  it("accepts a bounded nudge and rejects a large one", () => {
+    expect(clientMessageSchema.safeParse({ type: "calibNudge", deltaBaseMm: [1, -5, 10] }).success).toBe(true);
+    expect(clientMessageSchema.safeParse({ type: "calibNudge", deltaBaseMm: [11, 0, 0] }).success).toBe(false);
+  });
+
+  it("checks goto squares and heights", () => {
+    expect(clientMessageSchema.safeParse({ type: "calibGoto", square: "h8", heightMm: 50 }).success).toBe(true);
+    expect(clientMessageSchema.safeParse({ type: "calibGoto", square: "i9", heightMm: 50 }).success).toBe(false);
+    expect(clientMessageSchema.safeParse({ type: "calibGoto", square: "a1", heightMm: 1 }).success).toBe(false);
+  });
+
+  it("accepts only the three touch-off points", () => {
+    expect(clientMessageSchema.safeParse({ type: "calibRecord", point: "h1" }).success).toBe(true);
+    expect(clientMessageSchema.safeParse({ type: "calibRecord", point: "a8" }).success).toBe(false);
+  });
+
+  it("bounds a manual pose", () => {
+    const ok = { type: "calibManualPose", origin: [600, 0, -160], rotationDeg: 3, square: 40 };
+    expect(clientMessageSchema.safeParse(ok).success).toBe(true);
+    expect(clientMessageSchema.safeParse({ ...ok, origin: [6000, 0, 0] }).success).toBe(false);
+    expect(clientMessageSchema.safeParse({ ...ok, square: 0 }).success).toBe(false);
+  });
+});

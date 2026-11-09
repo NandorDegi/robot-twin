@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { calibClientSchemas, type CalibServerMessage } from "./calibration";
+
+export * from "./calibration";
 
 export const vec3Schema = z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]);
 export type Vec3 = z.infer<typeof vec3Schema>;
@@ -92,6 +95,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   syncBoardSchema,
   robotMoveSchema,
   clearFaultSchema,
+  ...calibClientSchemas,
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
@@ -117,4 +121,5 @@ export type ServerMessage =
       verified: boolean;
       decider: string;
     }
+  | CalibServerMessage
   | { type: "error"; message: string };

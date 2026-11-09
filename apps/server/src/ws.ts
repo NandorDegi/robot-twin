@@ -4,6 +4,8 @@ import type { ClientMessage, ServerMessage } from "@robot/protocol";
 import type { RobotController } from "./controller";
 import { TrajectoryRecorder, replay } from "./record";
 import { ChessSession } from "./chess";
+import type { CalibrationService } from "./calib/service";
+import { sameOrigin } from "./calib/origin";
 
 /**
  * WebSocket bridge between the browser twin and the RobotController.
@@ -13,11 +15,13 @@ export interface WebsocketOptions {
   /** Bind address. Default 127.0.0.1: Caddy is the only way in from the LAN. */
   host?: string;
   chess?: ChessSession;
+  /** Calibration wizard (robot-frame step, reload, final check, loop gate). */
+  calib?: CalibrationService;
 }
 
 export function startWebsocket(controller: RobotController, port: number, opts: WebsocketOptions = {}): WebSocketServer {
   const host = opts.host ?? "127.0.0.1";
-  const wss = new WebSocketServer({ port, host, maxPayload: 256 * 1024 });
+  const wss = new WebSocketServer({ port, host, maxPayload: 256 * 1024, verifyClient: (info: { req: { headers: import("node:http").IncomingHttpHeaders } }) => sameOrigin(info.req.headers) });
   const recorder = new TrajectoryRecorder();
   const chess = opts.chess ?? new ChessSession(controller);
 
@@ -26,6 +30,10 @@ export function startWebsocket(controller: RobotController, port: number, opts: 
     send(ws, stateMessage(controller));
     send(ws, chessMessage(chess));
     send(ws, loopMessage(chess));
+    if (opts.calib) {
+      send(ws, opts.calib.statusMessage());
+      send(ws, opts.calib.robotMessage());
+    }
 
     // Deadman: when the last twin disconnects, nobody watches the arm. Stop
     // and disable it; a person must enable it again after reconnecting.
@@ -50,7 +58,16 @@ export function startWebsocket(controller: RobotController, port: number, opts: 
         send(ws, { type: "error", message: result.error.message });
         return;
       }
-      void handle(controller, ws, result.data, recorder, chess);
+      const msg = result.data;
+      if (msg.type.startsWith("calib")) {
+        if (!opts.calib) send(ws, { type: "error", message: "calibration is not available on this server" });
+        else
+          void opts.calib.handle(msg as Parameters<CalibrationService["handle"]>[0]).then((r) => {
+            if (!r.ok) send(ws, { type: "error", message: `calibration: ${r.error ?? "failed"}` });
+          });
+        return;
+      }
+      void handle(controller, ws, msg, recorder, chess);
     });
   });
 
@@ -64,6 +81,10 @@ export function startWebsocket(controller: RobotController, port: number, opts: 
   chess.subscribe(() => {
     broadcast(chessMessage(chess));
     broadcast(loopMessage(chess));
+  });
+  opts.calib?.subscribe(() => {
+    broadcast(opts.calib!.statusMessage());
+    broadcast(opts.calib!.robotMessage());
   });
 
   wss.on("error", (err) => {
