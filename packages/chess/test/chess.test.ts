@@ -16,6 +16,18 @@ describe("chess engine", () => {
     expect(toFen(pos)).toBe(fen);
   });
 
+  it("a capture resets the halfmove clock; a quiet piece move increments it", () => {
+    // White knight on d4 can take the black knight on e6, or retreat to f3.
+    const pos = parseFen("4k3/8/4n3/8/3N4/8/8/4K3 w - - 7 30");
+    const capture = applyMove(pos, uciToMove(pos, "d4e6"));
+    expect(capture.halfmove).toBe(0);
+    expect(toFen(capture)).toBe("4k3/8/4N3/8/8/8/8/4K3 b - - 0 30");
+    const quiet = applyMove(pos, uciToMove(pos, "d4f3"));
+    expect(quiet.halfmove).toBe(8);
+    const pawn = applyMove(parseFen("4k3/8/8/8/8/8/4P3/4K3 w - - 5 40"), uciToMove(parseFen("4k3/8/8/8/8/8/4P3/4K3 w - - 5 40"), "e2e4"));
+    expect(pawn.halfmove).toBe(0);
+  });
+
   it("has exactly 20 legal moves from the start", () => {
     const pos = initialPosition();
     expect(legalMoves(pos, "w")).toHaveLength(20);

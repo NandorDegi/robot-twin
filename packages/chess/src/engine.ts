@@ -312,6 +312,8 @@ export function applyMove(pos: Position, move: Move): Position {
   const next = clonePosition(pos);
   const b = next.board;
   const moving = b[move.from.r]![move.from.c]!;
+  // Read the capture BEFORE the piece moves (the destination is overwritten below).
+  const captures = b[move.to.r]![move.to.c]?.color === OPP[moving.color] || move.flags.includes("ep");
   b[move.to.r]![move.to.c] = move.promotion ? { color: moving.color, type: move.promotion } : moving;
   b[move.from.r]![move.from.c] = null;
 
@@ -340,7 +342,7 @@ export function applyMove(pos: Position, move: Move): Position {
   }
 
   // Halfmove clock.
-  if (moving.type === "p" || b[move.to.r]![move.to.c]?.color === OPP[moving.color]) {
+  if (moving.type === "p" || captures) {
     next.halfmove = 0;
   } else {
     next.halfmove += 1;
