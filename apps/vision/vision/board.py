@@ -24,12 +24,30 @@ class Board:
             [config.BOARD_ORIGIN_X, config.BOARD_ORIGIN_Y, config.BOARD_ORIGIN_Z],
             dtype=float,
         )
+        self._rotation = config.BOARD_ROTATION_DEG
         self._H = None  # world(x,y) -> pixel homography (set by calibration)
+        # Thresholds of /board. A saved wizard calibration overrides the env defaults.
+        self.thresholds = default_thresholds()
 
     # --- calibration --------------------------------------------------------
 
     def set_homography(self, H: np.ndarray) -> None:
         self._H = H
+
+    def set_pose(self, origin, rotation_deg: float, square: float = None) -> None:
+        """Board pose in the twin frame (a1 corner, mm; yaw, deg), from a calibration."""
+        self._origin = np.array([float(v) for v in origin], dtype=float)
+        self._rotation = float(rotation_deg)
+        if square:
+            self._square = float(square)
+
+    @property
+    def pose(self) -> dict:
+        return {"origin": [float(v) for v in self._origin], "rotation_deg": self._rotation, "square": self._square}
+
+    @property
+    def homography(self):
+        return None if self._H is None else self._H.copy()
 
     @property
     def calibrated(self) -> bool:
@@ -38,6 +56,8 @@ class Board:
     def save(self, path: str = config.CALIBRATION_FILE) -> None:
         if self._H is None:
             raise RuntimeError("Board is not calibrated")
+        if _is_wizard_file(path):
+            raise RuntimeError(f"{path} is a wizard calibration: recalibrate with the Calibrate wizard")
         with open(path, "w") as f:
             json.dump({"H": self._H.tolist(), "square": self._square}, f)
 
@@ -46,6 +66,8 @@ class Board:
             return False
         with open(path) as f:
             data = json.load(f)
+        if "schema" in data:  # the wizard format (vision/calib.py)
+            data = {"H": data["board"]["homography"], "square": data["board"]["square_mm"]}
         self._H = np.array(data["H"], dtype=float)
         self._square = float(data["square"])
         return self._H is not None
@@ -84,7 +106,7 @@ class Board:
 
     def _rot(self, lx: float, lz: float) -> tuple[float, float]:
         """Rotate a board-plane local offset (files, ranks) about the vertical."""
-        t = math.radians(config.BOARD_ROTATION_DEG)
+        t = math.radians(self._rotation)
         c = math.cos(t)
         s = math.sin(t)
         return (lx * c + lz * s, -lx * s + lz * c)
@@ -142,34 +164,78 @@ class Board:
         size = int(round(self.board_width * k))
         return cv2.warpPerspective(frame, S @ np.linalg.inv(self._H), (size, size))
 
-    def board_state(self, frame, reference) -> dict:
+    def board_state(self, frame, reference, thresholds: dict = None, details: bool = False) -> dict:
         """Per square: "w", "b" or None, compared with an EMPTY-board reference.
 
         Both images are camera frames (same camera, same pose). Returns
-        {"squares": {"a1": "w"|"b"|None, ...}, "scores": {"a1": occupied_fraction}}.
+        {"squares": {"a1": "w"|"b"|None, ...}, "scores": {"a1": occupied_fraction}}
+        and, with details=True, "details": {"a1": {frac, grey, confidence}}.
+        `thresholds` (diff, occupied_fraction, white) default to self.thresholds.
         """
         cv2 = _cv2()
+        th = {**self.thresholds, **(thresholds or {})}
         k = config.TOPDOWN_PX_PER_MM
-        top = cv2.cvtColor(self.topdown(frame, k), cv2.COLOR_BGR2GRAY)
-        ref = cv2.cvtColor(self.topdown(reference, k), cv2.COLOR_BGR2GRAY)
+        top = _grey(self.topdown(frame, k))
+        ref = _grey(self.topdown(reference, k))
         diff = cv2.absdiff(top, ref)
+        squares, scores, info = {}, {}, {}
+        for rank_idx, file_idx, (y0, y1, x0, x1) in self.square_windows(k):
+            name = square_name(rank_idx, file_idx)
+            changed = diff[y0:y1, x0:x1] > th["diff"]
+            frac = float(changed.mean()) if changed.size else 0.0
+            scores[name] = round(frac, 3)
+            occ_conf = _confidence(frac, th["occupied_fraction"], 0.1)
+            if frac < th["occupied_fraction"]:
+                squares[name] = None
+                info[name] = {"frac": round(frac, 3), "grey": None, "confidence": round(occ_conf, 2)}
+                continue
+            grey = float(top[y0:y1, x0:x1][changed].mean())
+            squares[name] = "w" if grey >= th["white"] else "b"
+            conf = min(occ_conf, _confidence(grey, th["white"], 40.0))
+            info[name] = {"frac": round(frac, 3), "grey": round(grey, 1), "confidence": round(conf, 2)}
+        out = {"squares": squares, "scores": scores}
+        if details:
+            out["details"] = info
+        return out
+
+    def square_windows(self, k: float = None, inset: float = 0.2):
+        """(rank_idx, file_idx, (y0, y1, x0, x1)) of the centre window of each square
+        in the top-down image (a8 top-left), `inset` of the square on each side."""
+        k = k or config.TOPDOWN_PX_PER_MM
         sq = self._square * k
-        squares, scores = {}, {}
         for rank_idx in range(8):
             for file_idx in range(8):
-                name = square_name(rank_idx, file_idx)
                 row = 7 - rank_idx  # image row 0 = rank 8
-                y0, y1 = int((row + 0.2) * sq), int((row + 0.8) * sq)
-                x0, x1 = int((file_idx + 0.2) * sq), int((file_idx + 0.8) * sq)
-                changed = diff[y0:y1, x0:x1] > config.DIFF_THRESHOLD
-                frac = float(changed.mean()) if changed.size else 0.0
-                scores[name] = round(frac, 3)
-                if frac < config.OCCUPIED_FRACTION:
-                    squares[name] = None
-                    continue
-                grey = float(top[y0:y1, x0:x1][changed].mean())
-                squares[name] = "w" if grey >= config.WHITE_THRESHOLD else "b"
-        return {"squares": squares, "scores": scores}
+                yield rank_idx, file_idx, (
+                    int((row + inset) * sq), int((row + 1 - inset) * sq),
+                    int((file_idx + inset) * sq), int((file_idx + 1 - inset) * sq),
+                )
+
+
+def default_thresholds() -> dict:
+    return {
+        "diff": float(config.DIFF_THRESHOLD),
+        "occupied_fraction": float(config.OCCUPIED_FRACTION),
+        "white": float(config.WHITE_THRESHOLD),
+    }
+
+
+def _confidence(value: float, threshold: float, scale: float) -> float:
+    """0 at the threshold, 1 at `scale` or more away from it."""
+    return float(min(1.0, abs(value - threshold) / scale)) if scale > 0 else 1.0
+
+
+def _grey(img):
+    cv2 = _cv2()
+    return img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+
+def _is_wizard_file(path: str) -> bool:
+    try:
+        with open(path) as f:
+            return "schema" in json.load(f)
+    except (OSError, ValueError):
+        return False
 
 
 def square_name(rank_idx: int, file_idx: int) -> str:

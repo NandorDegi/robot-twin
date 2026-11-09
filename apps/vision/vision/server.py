@@ -7,6 +7,7 @@ Endpoints:
   GET  /board       chess-loop board state: per square "w" | "b" | null
   POST /calibrate   fit the homography from the 4 ArUco corner markers
   POST /reference   save the EMPTY board image used by /board
+  /calib/...        the calibration wizard (vision/calib_api.py)
   (GET /calibrate is kept for old clients.)
 """
 
@@ -21,6 +22,7 @@ from .capture import Camera
 from .board import Board, calibrate_from_markers, detect_aruco_marker
 from .config import config
 from .pieces import detect_pieces
+from . import calib_api
 
 _camera = None
 _reference = None
@@ -48,8 +50,8 @@ except Exception as exc:  # noqa: BLE001
 def _get_camera() -> Camera:
     global _camera
     if _camera is None:
-        _camera = Camera(config.CAMERA_INDEX)
-        _camera.start()
+        # Index, synthetic or file source; the calibration's camera settings.
+        _camera = calib_api.open_camera()
     return _camera
 
 
@@ -88,7 +90,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path == "/health":
+        if path.startswith("/calib/"):
+            calib_api.handle(self, "GET")
+        elif path == "/health":
             self._send_json({"status": "ok"})
         elif path == "/calibrate":
             self._calibrate()
@@ -103,7 +107,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        if path == "/calibrate":
+        if path.startswith("/calib/"):
+            calib_api.handle(self, "POST")
+        elif path == "/calibrate":
             self._calibrate()
         elif path == "/reference":
             self._save_reference()
@@ -131,6 +137,9 @@ class Handler(BaseHTTPRequestHandler):
         global _reference
         import cv2
 
+        if calib_api.wizard_active():
+            self._send_json({"ok": False, "error": "a wizard calibration is active: retake the reference in the Calibrate wizard"})
+            return
         frame = _get_camera().read()
         if frame is None:
             self._send_json({"ok": False, "error": "no camera frame"})
@@ -167,9 +176,17 @@ class Handler(BaseHTTPRequestHandler):
             if ids
             else []
         )
+        if calib_api.wizard_active():
+            self._send_json({"calibrated": _board.calibrated, "fitted": False, "markers": marker_list,
+                             "error": "a wizard calibration is active: use the Calibrate wizard (/vision/calib)"})
+            return
         ok = calibrate_from_markers(frame, _board)
         if ok:
-            _board.save()
+            try:
+                _board.save()
+            except RuntimeError as exc:  # never overwrite a wizard calibration
+                self._send_json({"calibrated": _board.calibrated, "fitted": ok, "saved": False, "error": str(exc)})
+                return
         self._send_json(
             {
                 "calibrated": _board.calibrated,
@@ -187,6 +204,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             while True:
+                cam = _get_camera()  # the wizard can switch the camera
                 frame = cam.read()
                 jpeg = cam.jpeg(frame) if frame is not None else _placeholder_jpeg()
                 if jpeg is None:
@@ -204,6 +222,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run():
+    try:
+        calib_api.activate_from_file()  # the wizard's calibration file (either format)
+    except Exception as exc:  # noqa: BLE001 - a bad file must not stop the service
+        print(f"[vision] could not load the calibration: {exc}")
     cam = _get_camera()
     if cam.available:
         print(f"[vision] camera {config.CAMERA_INDEX} open")

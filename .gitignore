@@ -13,3 +13,6 @@ __pycache__/
 install/
 log/
 .pytest_cache/
+apps/vision/calibration.json
+apps/vision/calibration.d/
+apps/vision/reference.png
