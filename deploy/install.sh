@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# robot-twin install script for the Intel NUC (x86_64, Ubuntu 22.04).
+# robot-twin install script for the Intel NUC (x86_64, Ubuntu 22.04 or Debian 12/13).
 #
 # Run from the unpacked bundle, as root:
 #   sudo bash deploy/install.sh [--with-libfranka-examples] [--with-ros]
@@ -61,7 +61,12 @@ die() { echo -e "\e[1;31m[install] ERROR:\e[0m $*" >&2; exit 1; }
 [ "$(uname -m)" = "x86_64" ] || [ "${INSTALL_ALLOW_ANY_ARCH:-0}" = 1 ] || die "this script is for the x86_64 NUC (found $(uname -m))"
 case "$(uname -m)" in x86_64) NODE_ARCH=x64 ;; aarch64) NODE_ARCH=arm64 ;; *) die "no Node.js build for $(uname -m)" ;; esac
 . /etc/os-release
-[ "${VERSION_ID:-}" = "22.04" ] || die "Ubuntu 22.04 expected (found ${PRETTY_NAME:-unknown})"
+# Ubuntu 22.04 (the first target) or Debian 12/13: every package used here exists in both, and
+# panda-python 1.1.1 has wheels for Python 3.9-3.14. ROS 2 (--with-ros) stays Ubuntu 22.04 only.
+case "${ID:-}:${VERSION_ID:-}" in
+  ubuntu:22.04|debian:12|debian:13) ;;
+  *) die "Ubuntu 22.04 or Debian 12/13 expected (found ${PRETTY_NAME:-unknown})" ;;
+esac
 [ -f "$SRC/pnpm-lock.yaml" ] && [ -d "$SRC/apps/franka" ] || die "run from the unpacked robot-twin bundle"
 
 # --- 1. system packages ------------------------------------------------------
@@ -170,6 +175,7 @@ fi
 
 # --- 7. optional: ROS 2 ----------------------------------------------------------
 if [ "$WITH_ROS" = 1 ]; then
+  [ "${ID:-}" = ubuntu ] || die "--with-ros needs Ubuntu 22.04 (ROS 2 Humble has no Debian packages)"
   log "7/9 OPTIONAL ROS 2 Humble + ws_bridge"
   [ -n "$FRANKA_ROS2_REF" ] || die "--with-ros needs FRANKA_ROS2_REF=<franka_ros2 tag that supports the Panda and libfranka 0.9.x>; see docs/NUC-BRINGUP.md"
   if [ ! -f /etc/apt/sources.list.d/ros2.list ] && ! dpkg -s ros2-apt-source >/dev/null 2>&1; then

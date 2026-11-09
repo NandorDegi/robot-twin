@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Install the robot's brain on the NUC (x86_64, Ubuntu 22.04), after
+# Install the robot's brain on the NUC (x86_64, Ubuntu 22.04 or Debian 12/13), after
 # deploy/install.sh. The brain is the decision maker of the chess loop; there
 # is no chess engine to fall back to.
 #
@@ -46,7 +46,12 @@ die() { echo -e "\e[1;31m[brain] ERROR:\e[0m $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root: sudo bash deploy/brain/install-brain.sh"
 [ "$(uname -m)" = "x86_64" ] || [ "${INSTALL_ALLOW_ANY_ARCH:-0}" = 1 ] || die "this script is for the x86_64 NUC (found $(uname -m))"
 . /etc/os-release
-[ "${VERSION_ID:-}" = "22.04" ] || die "Ubuntu 22.04 expected (found ${PRETTY_NAME:-unknown})"
+# Ubuntu 22.04 (the first target) or Debian 12/13: every package used here exists in both, and
+# panda-python 1.1.1 has wheels for Python 3.9-3.14. ROS 2 (--with-ros) stays Ubuntu 22.04 only.
+case "${ID:-}:${VERSION_ID:-}" in
+  ubuntu:22.04|debian:12|debian:13) ;;
+  *) die "Ubuntu 22.04 or Debian 12/13 expected (found ${PRETTY_NAME:-unknown})" ;;
+esac
 [ -f "$APP/apps/intuition/intuition_server.py" ] && id "$RUN_USER" >/dev/null 2>&1 \
   || die "run deploy/install.sh first (no $APP or no user $RUN_USER)"
 
