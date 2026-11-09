@@ -1,0 +1,16 @@
+[Unit]
+Description=robot-twin vision service (camera + board detection)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=robot-twin
+EnvironmentFile=/etc/robot-twin.env
+WorkingDirectory=/opt/robot-twin/vision
+ExecStart=/opt/robot-twin/vision-venv/bin/python -m vision
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+# Franka FCI bridge requirements (run on the workstation wired to the Panda).
+# See https://github.com/JeanElsner/panda-py for libfranka version matching.
+# For a FER/Panda, panda-python ships libfranka 0.9.2 (system >= 4.2.1).
+panda-python>=1.1.1

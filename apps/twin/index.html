@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%2339c66b'/%3E%3C/svg%3E" />
+    <title>Robot Twin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e14; color: #d7dde6; font-family: system-ui, sans-serif; }
+      #app { position: relative; height: 100%; }
+      #canvas { display: block; width: 100%; height: 100%; }
+
+      #panel {
+        position: absolute; top: 12px; left: 12px; width: 340px; max-height: calc(100vh - 24px);
+        background: rgba(15, 20, 30, 0.85); border: 1px solid #2a3140; border-radius: 10px;
+        padding: 14px; overflow-y: auto; backdrop-filter: blur(6px); font-size: 13px;
+      }
+      #panel h1 { font-size: 15px; margin: 0 0 6px; }
+      #status { display: inline-flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: #d9534f; }
+      .dot.on { background: #4caf50; }
+      .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+      .row label { width: 84px; color: #9fb0c7; }
+      .row input[type="range"] { flex: 1; }
+      .row .val { width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
+      .spacer { height: 10px; }
+      .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      button { background: #1e2636; color: #d7dde6; border: 1px solid #2a3140; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      button:hover { background: #273042; }
+      button.primary { background: #2c57a8; border-color: #3a6bcf; }
+      button.warn { background: #8a3b2c; border-color: #b3503a; }
+      .section { margin-top: 12px; padding-top: 10px; border-top: 1px solid #232a38; }
+      .section h2 { font-size: 12px; margin: 0 0 6px; color: #7f8ea3; text-transform: uppercase; letter-spacing: 0.5px; }
+      .hint { color: #6f7d91; font-size: 12px; }
+      #feed { position: absolute; bottom: 12px; right: 12px; width: 320px; height: 240px; border: 1px solid #2a3140; border-radius: 8px; background: #000; }
+      #feed img { width: 100%; height: 100%; object-fit: cover; }
+      #feed .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #5a6678; font-size: 12px; }
+      #hud { position: absolute; bottom: 12px; left: 12px; color: #8fa0b6; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="canvas"></canvas>
+      <div id="panel">
+        <h1>Robot Twin</h1>
+        <div id="status"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></div>
+
+        <div class="section">
+          <h2>Joints (deg)</h2>
+          <div id="jointSliders"></div>
+        </div>
+
+        <div class="section">
+          <h2>Target (mm)</h2>
+          <div id="targetControls"></div>
+          <div class="buttons">
+            <button class="primary" id="btnGo">Move → Target</button>
+            <button id="btnHome">Home</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Controls</h2>
+          <div class="buttons">
+            <button id="btnEnable">Enable</button>
+            <button id="btnGripper">Gripper</button>
+            <button id="btnEStop" class="warn">E-Stop</button>
+          </div>
+          <label class="chk" style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;opacity:.85">
+            <input type="checkbox" id="chkGripperSlow" /> slow gripper (2.5 s stroke)
+          </label>
+          <div class="buttons">
+            <button id="btnRecord">Record</button>
+            <button id="btnReplay">Replay</button>
+          </div>
+          <p class="hint">Drag the green target sphere to move the end effector; then press "Move".</p>
+        </div>
+
+        <div class="section">
+          <h2>Chess</h2>
+          <div id="chessStatus" class="hint">–</div>
+          <div class="row">
+            <input id="sanInput" type="text" placeholder="e.g. e4 or Nf3" spellcheck="false" style="flex:1" />
+            <button id="btnSpeak">🎤</button>
+            <button id="btnPlay" class="primary">Play</button>
+          </div>
+          <div class="buttons">
+            <button id="btnReset">New game</button>
+          </div>
+          <div class="row">
+            <label>Twin Elo</label>
+            <input id="eloRange" type="range" min="400" max="2200" step="100" value="1200" />
+            <span id="eloVal" class="val">1200</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="feed"><div class="empty" id="feedEmpty">camera feed</div><img id="feedImg" style="display:none" alt="" /></div>
+      <div id="hud" id="hud"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

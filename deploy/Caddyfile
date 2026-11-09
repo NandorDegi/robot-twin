@@ -1,0 +1,18 @@
+# robot-twin reverse proxy (Caddy).
+#
+# Serves the built twin, and proxies /robot-ws (to the ws_bridge) and /vision
+# (to the vision service) on the SAME origin, so the twin works with no CORS /
+# host setting. The twin connects to `${location.origin}/robot-ws` and /vision.
+#
+# Listens on :5909 (all interfaces, HTTP). Open http://<nuc-ip>:5909 in a browser.
+# For HTTPS, swap the site address for a domain and add tls (see DEPLOY.md).
+:5909 {
+	root * /opt/robot-twin/twin
+	file_server
+
+	# WebSocket to the ws_bridge (twin -> MoveIt). Caddy handles the upgrade.
+	reverse_proxy /robot-ws* localhost:3001
+
+	# Vision service (camera stream + detection).
+	reverse_proxy /vision/* localhost:8081
+}

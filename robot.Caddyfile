@@ -1,0 +1,34 @@
+# Reverse proxy for the Robot Twin app over one HTTPS origin.
+#
+# The twin page (Vite) is proxy-forwarded as the site; the robot WebSocket and
+# the vision service are exposed on sub-paths so the browser does not make any
+# plain-HTTP (mixed content) requests when the page is served over HTTPS.
+#
+# Run it (as the `robot` HTTPS entry):
+#   caddy run --config robot.Caddyfile
+#
+# The twin detects the HTTPS page and connects to:
+#   wss://<host>/robot-ws      -> this proxy -> :3001  (robot controller WS)
+#   https://<host>/vision/*    -> this proxy -> :8081  (vision service)
+
+{
+  # Internal CA — trust this CA in the browser, or use a real cert.
+  local_certs
+}
+
+https://robot:5909 {
+  # Robot controller WebSocket
+  handle /robot-ws* {
+    reverse_proxy localhost:3001
+  }
+
+  # Vision service (MJPEG stream + detect + calibrate)
+  handle /vision* {
+    reverse_proxy localhost:8081
+  }
+
+  # Everything else -> the twin (Vite dev server)
+  handle {
+    reverse_proxy localhost:5173
+  }
+}
