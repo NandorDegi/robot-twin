@@ -4,6 +4,7 @@ import type { ClientMessage, ServerMessage } from "@robot/protocol";
 import type { RobotController } from "./controller";
 import { TrajectoryRecorder, replay } from "./record";
 import { ChessSession } from "./chess";
+import { BrainSession } from "./brain-session";
 
 /**
  * WebSocket bridge between the browser twin and the RobotController.
@@ -13,6 +14,7 @@ export function startWebsocket(controller: RobotController, port: number): WebSo
   const wss = new WebSocketServer({ port, host: "0.0.0.0" });
   const recorder = new TrajectoryRecorder();
   const chess = new ChessSession(controller);
+  const brain = new BrainSession(controller, (msg) => broadcast(msg));
 
   wss.on("connection", (ws: WebSocket) => {
     send(ws, robotInfo(controller));
@@ -30,6 +32,10 @@ export function startWebsocket(controller: RobotController, port: number): WebSo
       const result = clientMessageSchema.safeParse(parsed);
       if (!result.success) {
         send(ws, { type: "error", message: result.error.message });
+        return;
+      }
+      if (result.data.type === "brain") {
+        brain.handle(result.data).catch((err) => send(ws, { type: "error", message: `brain: ${(err as Error).message}` }));
         return;
       }
       void handle(controller, ws, result.data, recorder, chess);

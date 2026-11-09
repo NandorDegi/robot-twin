@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { brainCommandSchema, type BrainServerMessage } from "./brain";
+
+export * from "./brain";
 
 export const vec3Schema = z.tuple([z.number(), z.number(), z.number()]);
 export type Vec3 = z.infer<typeof vec3Schema>;
@@ -82,6 +85,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   playSanSchema,
   setOpponentSchema,
   resetGameSchema,
+  brainCommandSchema,
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
@@ -99,4 +103,5 @@ export type ServerMessage =
   | { type: "piece"; piece: { color: string; type: string; square: [number, number] } }
   | { type: "recorded"; steps: RecordedStep[] }
   | { type: "chess"; fen: string; turn: string; lastSan: string; check: boolean; opponentEnabled: boolean; elo: number }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | BrainServerMessage;

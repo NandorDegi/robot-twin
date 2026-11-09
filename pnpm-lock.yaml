@@ -10,6 +10,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@robot/brain':
+        specifier: workspace:*
+        version: link:../../packages/brain
       '@robot/chess':
         specifier: workspace:*
         version: link:../../packages/chess
