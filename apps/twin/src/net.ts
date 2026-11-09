@@ -1,6 +1,9 @@
 import type { ClientMessage, RecordedStep } from "@robot/protocol";
 import { useTwin } from "./store";
 
+/** Extra listeners for server messages (the Calibrate wizard). */
+export const serverMessageListeners = new Set<(msg: any) => void>();
+
 export interface TwinSocket {
   send(msg: ClientMessage): void;
   close(): void;
@@ -44,6 +47,7 @@ export function connect(
         return;
       }
       applyServerMessage(msg, onTargetResult);
+      for (const fn of serverMessageListeners) fn(msg);
     };
   };
   open();

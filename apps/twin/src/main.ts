@@ -10,6 +10,7 @@ import { useTwin } from "./store";
 import { connect, type TwinSocket } from "./net";
 import { LocalSim } from "./localsim";
 import type { ClientMessage } from "@robot/protocol";
+import { mountCalibration } from "./calib/wizard";
 
 const chain = buildChain(defaultArmConfig());
 
@@ -683,4 +684,5 @@ window.addEventListener("resize", () => {
 
 hudWrite = ui().setHud;
 chessUi();
+mountCalibration({ chain, localSim, send: (m) => socket?.send(m) });
 animate();

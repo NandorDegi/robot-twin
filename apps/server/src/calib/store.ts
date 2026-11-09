@@ -51,7 +51,7 @@ export class CalibrationStore {
 
   private read(): CalibrationState {
     const bad = (reason: string): CalibrationState => ({ file: this.file, valid: false, reasons: [reason], calibration: null });
-    if (!existsSync(this.file)) return bad(`no calibration file (${this.file}): run the Calibrate wizard`);
+    if (!existsSync(this.file)) return bad("no calibration file yet: run the Calibrate wizard");
     let raw: unknown;
     try {
       raw = JSON.parse(readFileSync(this.file, "utf8"));

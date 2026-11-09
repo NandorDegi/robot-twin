@@ -32,7 +32,8 @@ import {
   toolDownRotation,
 } from "@robot/robot-config";
 import type { Vec3 } from "@robot/kinematics";
-import { BOARD } from "@robot/chess";
+import { BOARD, setBoardPose } from "@robot/chess";
+import { CalibrationStore, defaultCalibrationFile } from "../calib/store";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { writeFileSync } from "node:fs";
@@ -211,6 +212,16 @@ function main(): void {
   }
 
   if (argv.includes("--check")) {
+    // The saved wizard calibration is the source of the board pose; without
+    // one, the defaults in packages/chess/src/board.ts are checked.
+    const st = new CalibrationStore(defaultCalibrationFile()).load();
+    const r = st.calibration?.robot;
+    if (r) {
+      setBoardPose({ origin: [...r.origin_twin_mm], rotationDeg: r.rotation_deg, square: r.square_mm });
+      console.log(`Board pose from calibration r${st.calibration!.revision} (${st.file})`);
+    } else {
+      console.log(`No saved calibration (${st.reasons[0]}); checking the defaults of board.ts`);
+    }
     reachability(BOARD.origin, BOARD.rotationDeg);
     return;
   }

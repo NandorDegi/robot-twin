@@ -63,6 +63,8 @@ export type CalibrationFile = z.infer<typeof calibrationFileSchema>;
 // --- vision /calib responses (the twin reads these) -----------------------------
 
 export const visionErrorSchema = z.object({ ok: z.literal(false), error: z.string() });
+/** Any successful answer (fields checked by the caller where they matter). */
+export const visionOkSchema = z.object({ ok: z.literal(true) }).passthrough();
 
 export const overlaySchema = z.object({
   lines: z.array(z.tuple([px, px])),

@@ -117,7 +117,7 @@ describe("the chess loop refuses without a valid calibration", () => {
     const q0 = controller.state;
     const r = await chess.playSan("e4");
     expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/no valid calibration: no calibration file/);
+    expect(r.error).toMatch(/no valid calibration: no calibration file yet/);
     expect(chess.loopStatus.message).toMatch(/refused: no valid calibration/);
     expect(chess.turn).toBe("w");
     expect(controller.state).toEqual(q0);

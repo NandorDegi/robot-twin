@@ -228,9 +228,9 @@ def run():
         print(f"[vision] could not load the calibration: {exc}")
     cam = _get_camera()
     if cam.available:
-        print(f"[vision] camera {config.CAMERA_INDEX} open")
+        print(f"[vision] camera {cam.index} open")
     else:
-        print(f"[vision] camera {config.CAMERA_INDEX} NOT available; serving placeholder")
+        print(f"[vision] camera {cam.index} NOT available; serving placeholder")
     server = ThreadingHTTPServer((config.HOST, config.PORT), Handler)
     print(f"[vision] listening on http://{config.HOST}:{config.PORT}")
     server.serve_forever()
