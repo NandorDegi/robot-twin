@@ -156,7 +156,7 @@ export interface Lc0Options {
   path?: string;
   /** Maia weights file, e.g. /opt/maia/maia-1500.pb.gz */
   weights: string;
-  /** lc0 backend; CPU choices: "eigen" (no deps), "blas" (OpenBLAS), "onednn". */
+  /** lc0 backend; CPU choices: "blas" (OpenBLAS), "eigen", "onednn". Default: lc0's own choice. */
   backend?: string;
   threads?: number;
   timeoutMs?: number;
@@ -187,7 +187,8 @@ export class Lc0PolicyModel implements PolicyModel {
     this.name = `maia:${base.replace(/\.pb(\.gz)?$/, "")}`;
     this.uci = new UciProcess({
       path: opts.path ?? "lc0",
-      args: [`--weights=${opts.weights}`, `--backend=${opts.backend ?? "eigen"}`, `--threads=${opts.threads ?? 1}`],
+      // No --backend: lc0 picks the best one it was built with (blas/eigen/onednn on a CPU-only NUC).
+      args: [`--weights=${opts.weights}`, ...(opts.backend ? [`--backend=${opts.backend}`] : []), `--threads=${opts.threads ?? 1}`],
       options: { VerboseMoveStats: "true" },
       installHint:
         "lc0 has no apt package: build it on the NUC (docs/BRAIN.md 'Maia via lc0'), or set INTUITION_LC0_PATH.",
