@@ -9,7 +9,7 @@ import os
 
 import numpy as np
 
-from .board import Board
+from .board import Board, square_name
 from .config import config
 
 
@@ -17,8 +17,10 @@ def detect_pieces(frame, board: Board) -> list[dict]:
     """Detect chess pieces from a frame.
 
     Returns a list of dicts:
-        {color, type, x, y, square: [row, col], target: [x, y, z]}
-    where `target` is the robot-frame pickup position in metres.
+        {color, type, x, y, square: "e4" | None, rowcol: [rank_idx, file_idx], target: [x, y, z]}
+    where `target` is the robot-frame (twin, mm) pickup position.
+    This is the clickable overlay for the twin. The chess loop uses
+    Board.board_state (GET /board), not this.
     """
     boxes = _detect_boxes(frame)
     pieces = []
@@ -32,7 +34,8 @@ def detect_pieces(frame, board: Board) -> list[dict]:
                 "type": ptype,
                 "x": float(cx),
                 "y": float(cy),
-                "square": square,
+                "square": square_name(*square) if square is not None else None,
+                "rowcol": square,
                 "target": target,
             }
         )
@@ -40,18 +43,18 @@ def detect_pieces(frame, board: Board) -> list[dict]:
 
 
 def square_of_pixel(px: np.ndarray, board: Board):
-    """Map a pixel to a board square [row, col], or None if not calibrated."""
+    """Map a pixel to [rank_idx, file_idx] (rank_idx 0 = rank 1), or None."""
     if not board.calibrated:
         return None
     try:
         xy = board.board_of_pixel(px)
     except RuntimeError:
         return None
-    col = int(xy[0] // board._square)
-    row = int(xy[1] // board._square)
-    if not (0 <= row < 8 and 0 <= col < 8):
+    file_idx = int(xy[0] // board.square_size)
+    rank_idx = 7 - int(xy[1] // board.square_size)
+    if not (0 <= rank_idx < 8 and 0 <= file_idx < 8):
         return None
-    return [row, col]
+    return [rank_idx, file_idx]
 
 
 # --- detection backends ------------------------------------------------------
@@ -64,6 +67,9 @@ def _detect_boxes(frame):
         return _heuristic_boxes(frame)
 
 
+_YOLO = None
+
+
 def _yolo_boxes(frame):
     import cv2
 
@@ -72,7 +78,10 @@ def _yolo_boxes(frame):
     if ultralytics is None or not weights or not os.path.exists(weights):
         raise FileNotFoundError("no YOLO weights configured")
 
-    model = ultralytics.YOLO(weights)
+    global _YOLO
+    if _YOLO is None:
+        _YOLO = ultralytics.YOLO(weights)
+    model = _YOLO
     results = model(frame, verbose=False)
     boxes = []
     for r in results:

@@ -1,7 +1,7 @@
 """Chessboard detection and the camera->board->robot coordinate mapping.
 
 For an overhead camera we model the board as a plane. A homography maps board
-"world" coordinates (x, y in the board plane, metres) to image pixels, and its
+"world" coordinates (x, y in the board plane, mm) to image pixels, and its
 inverse maps pixels back to board coordinates. The board origin is expressed in
 the robot-base frame via config, so a detected piece becomes a robot target.
 """
@@ -16,7 +16,7 @@ from .config import config
 
 
 class Board:
-    """Maps between board coordinates (metres, robot-base frame) and pixels."""
+    """Maps between board-plane coordinates (mm), pixels and robot targets."""
 
     def __init__(self):
         self._square = config.BOARD_SQUARE_SIZE
@@ -51,24 +51,36 @@ class Board:
         return self._H is not None
 
     # --- geometry -----------------------------------------------------------
+    #
+    # Board-plane coordinates (mm), as fitted by the calibration:
+    #   x runs along the files, a -> h, starting at the a-file edge;
+    #   y runs along the ranks, 8 -> 1, starting at the rank-8 edge.
+    # So marker 0 is the a8 corner, 1 = h8, 2 = a1, 3 = h1 (marker CENTRE on
+    # the outer board corner).
+    # Squares are reported as names ("e4") and as [rank_index, file_index]
+    # with rank_index 0 = rank 1, exactly like @robot/chess.
 
     @property
     def board_width(self) -> float:
         return 8 * self._square
 
+    @property
+    def square_size(self) -> float:
+        return self._square
+
     def corner_points(self) -> dict[int, tuple[float, float]]:
-        """Marker-id -> world board-plane point (metres) for the 4 corners."""
+        """Marker-id -> board-plane point (mm) for the 4 corners."""
         w = self.board_width
         return {
-            0: (0.0, 0.0),          # a8 corner (bottom-left)
-            1: (w, 0.0),            # h8 corner
-            2: (0.0, w),            # a1 corner
-            3: (w, w),              # h1 corner
+            0: (0.0, 0.0),  # a8 corner
+            1: (w, 0.0),    # h8 corner
+            2: (0.0, w),    # a1 corner
+            3: (w, w),      # h1 corner
         }
 
-    def square_board_point(self, row: int, col: int) -> np.ndarray:
-        """Board-plane point (metres, relative to board origin) of a square."""
-        return np.array([(col + 0.5) * self._square, (row + 0.5) * self._square])
+    def square_board_point(self, rank_idx: int, file_idx: int) -> np.ndarray:
+        """Board-plane point (mm) of the centre of a square (rank_idx 0 = rank 1)."""
+        return np.array([(file_idx + 0.5) * self._square, (7 - rank_idx + 0.5) * self._square])
 
     def _rot(self, lx: float, lz: float) -> tuple[float, float]:
         """Rotate a board-plane local offset (files, ranks) about the vertical."""
@@ -77,33 +89,27 @@ class Board:
         s = math.sin(t)
         return (lx * c + lz * s, -lx * s + lz * c)
 
-    def _target(self, lx: float, lz: float) -> list[float]:
-        """Robot-frame target (mm) for a board-plane local offset.
+    def _target(self, along_files: float, along_ranks: float) -> list[float]:
+        """Robot-frame (twin, mm) target for an offset from the a1 corner.
 
-        Files run toward -X (a-file at the high-X corner, matching @robot/chess
-        BOARD), ranks run toward +Z. The board-plane y in this class is measured
-        from the a8 corner, so negate the file axis here.
+        Same mapping as @robot/chess boardOffset: files run toward -X, ranks
+        toward +Z, the height is the board surface plus the pickup height.
         """
-        x, z = self._rot(lx, lz)
+        x, z = self._rot(-along_files, along_ranks)
         return [
             float(self._origin[0] + x),
-            float(config.BOARD_PICKUP_Z),
+            float(self._origin[1] + config.BOARD_PICKUP_Z),
             float(self._origin[2] + z),
         ]
 
-    def square_target(self, row: int, col: int) -> list[float]:
-        """Robot-frame target (mm) for the centre of square (row, col).
-
-        The model is Y-up, so the board lies in the X-Z plane and the pickup
-        height is the Y coordinate.
-        """
-        p = self.square_board_point(row, col)
-        return self._target(-float(p[0]), float(p[1]))
+    def square_target(self, rank_idx: int, file_idx: int) -> list[float]:
+        """Robot-frame target (mm) for the centre of a square (rank_idx 0 = rank 1)."""
+        return self._target((file_idx + 0.5) * self._square, (rank_idx + 0.5) * self._square)
 
     # --- pixel mapping ------------------------------------------------------
 
     def pixel_of_board(self, xy: np.ndarray) -> np.ndarray:
-        """Map a board-plane point (metres) to pixel coords."""
+        """Map a board-plane point (mm) to pixel coords."""
         if self._H is None:
             raise RuntimeError("Board is not calibrated")
         p = np.array([xy[0], xy[1], 1.0])
@@ -111,7 +117,7 @@ class Board:
         return q[:2] / q[2]
 
     def board_of_pixel(self, px: np.ndarray) -> np.ndarray:
-        """Map pixel coords to board-plane (x, y) in metres."""
+        """Map pixel coords to board-plane (x, y) in mm."""
         if self._H is None:
             raise RuntimeError("Board is not calibrated")
         P = np.linalg.inv(self._H)
@@ -120,9 +126,54 @@ class Board:
         return q[:2] / q[2]
 
     def robot_target_of_pixel(self, px: np.ndarray) -> list[float]:
-        """Robot-frame target (mm) for a pixel point on the board plane (Y-up)."""
+        """Robot-frame target (mm) for a pixel point on the board plane."""
         xy = self.board_of_pixel(px)
-        return self._target(-float(xy[0]), float(xy[1]))
+        return self._target(float(xy[0]), self.board_width - float(xy[1]))
+
+    # --- top-down view and board state ---------------------------------------
+
+    def topdown(self, frame, px_per_mm: float = None):
+        """Warp the camera frame to a top-down image of the board (a8 top-left)."""
+        cv2 = _cv2()
+        if self._H is None:
+            raise RuntimeError("Board is not calibrated")
+        k = px_per_mm or config.TOPDOWN_PX_PER_MM
+        S = np.array([[k, 0, 0], [0, k, 0], [0, 0, 1]], dtype=float)
+        size = int(round(self.board_width * k))
+        return cv2.warpPerspective(frame, S @ np.linalg.inv(self._H), (size, size))
+
+    def board_state(self, frame, reference) -> dict:
+        """Per square: "w", "b" or None, compared with an EMPTY-board reference.
+
+        Both images are camera frames (same camera, same pose). Returns
+        {"squares": {"a1": "w"|"b"|None, ...}, "scores": {"a1": occupied_fraction}}.
+        """
+        cv2 = _cv2()
+        k = config.TOPDOWN_PX_PER_MM
+        top = cv2.cvtColor(self.topdown(frame, k), cv2.COLOR_BGR2GRAY)
+        ref = cv2.cvtColor(self.topdown(reference, k), cv2.COLOR_BGR2GRAY)
+        diff = cv2.absdiff(top, ref)
+        sq = self._square * k
+        squares, scores = {}, {}
+        for rank_idx in range(8):
+            for file_idx in range(8):
+                name = square_name(rank_idx, file_idx)
+                row = 7 - rank_idx  # image row 0 = rank 8
+                y0, y1 = int((row + 0.2) * sq), int((row + 0.8) * sq)
+                x0, x1 = int((file_idx + 0.2) * sq), int((file_idx + 0.8) * sq)
+                changed = diff[y0:y1, x0:x1] > config.DIFF_THRESHOLD
+                frac = float(changed.mean()) if changed.size else 0.0
+                scores[name] = round(frac, 3)
+                if frac < config.OCCUPIED_FRACTION:
+                    squares[name] = None
+                    continue
+                grey = float(top[y0:y1, x0:x1][changed].mean())
+                squares[name] = "w" if grey >= config.WHITE_THRESHOLD else "b"
+        return {"squares": squares, "scores": scores}
+
+
+def square_name(rank_idx: int, file_idx: int) -> str:
+    return "abcdefgh"[file_idx] + str(rank_idx + 1)
 
 
 def fit_homography(src_world: np.ndarray, dst_pixel: np.ndarray) -> np.ndarray:

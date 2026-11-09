@@ -1,11 +1,17 @@
-"""Lightweight HTTP server for the vision service.
+"""Lightweight HTTP server for the vision service (standard library only).
 
-Uses the standard library (http.server) so the only non-stdlib dependency
-outside OpenCV/numpy is nothing. Endpoints: /health, /stream (MJPEG),
-/detect (JSON), /calibrate (JSON).
+Endpoints:
+  GET  /health      {"status": "ok"}
+  GET  /stream      MJPEG feed for the twin
+  GET  /detect      clickable piece overlay for the twin (heuristic or YOLO)
+  GET  /board       chess-loop board state: per square "w" | "b" | null
+  POST /calibrate   fit the homography from the 4 ArUco corner markers
+  POST /reference   save the EMPTY board image used by /board
+  (GET /calibrate is kept for old clients.)
 """
 
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -17,11 +23,26 @@ from .config import config
 from .pieces import detect_pieces
 
 _camera = None
+_reference = None
 _board = Board()
 try:
     _board.load()  # load a saved calibration if present
 except Exception as exc:  # a corrupt calibration file must not stop the service
     print(f"[vision] could not load calibration: {exc}")
+
+
+def _load_reference():
+    global _reference
+    if os.path.exists(config.REFERENCE_FILE):
+        import cv2
+
+        _reference = cv2.imread(config.REFERENCE_FILE)
+
+
+try:
+    _load_reference()
+except Exception as exc:  # noqa: BLE001
+    print(f"[vision] could not load the empty-board reference: {exc}")
 
 
 def _get_camera() -> Camera:
@@ -62,28 +83,61 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.end_headers()
-
     def do_GET(self):
-        if self.path == "/health":
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
             self._send_json({"status": "ok"})
-        elif self.path == "/calibrate":
+        elif path == "/calibrate":
             self._calibrate()
-        elif self.path == "/detect":
+        elif path == "/detect":
             self._detect()
-        elif self.path == "/stream":
+        elif path == "/board":
+            self._board_state("debug" in self.path)
+        elif path == "/stream":
             self._stream()
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/calibrate":
+            self._calibrate()
+        elif path == "/reference":
+            self._save_reference()
+        else:
+            self.send_error(404)
+
+    def _board_state(self, debug: bool):
+        if not _board.calibrated:
+            self._send_json({"ok": False, "error": "board not calibrated (POST /vision/calibrate)"})
+            return
+        if _reference is None:
+            self._send_json({"ok": False, "error": "no empty-board reference (POST /vision/reference with an empty board)"})
+            return
+        frame = _get_camera().read()
+        if frame is None:
+            self._send_json({"ok": False, "error": "no camera frame"})
+            return
+        st = _board.board_state(frame, _reference)
+        out = {"ok": True, "squares": st["squares"], "time": time.time()}
+        if debug:
+            out["scores"] = st["scores"]
+        self._send_json(out)
+
+    def _save_reference(self):
+        global _reference
+        import cv2
+
+        frame = _get_camera().read()
+        if frame is None:
+            self._send_json({"ok": False, "error": "no camera frame"})
+            return
+        cv2.imwrite(config.REFERENCE_FILE, frame)
+        _reference = frame
+        self._send_json({"ok": True, "reference_file": config.REFERENCE_FILE})
 
     def _detect(self):
         cam = _get_camera()
@@ -130,7 +184,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         try:
             while True:

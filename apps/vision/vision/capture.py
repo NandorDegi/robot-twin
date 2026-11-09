@@ -5,6 +5,7 @@ message) when OpenCV is not installed yet.
 """
 
 import threading
+import time
 from typing import Optional
 
 from .config import config
@@ -26,6 +27,7 @@ class Camera:
 
     def __init__(self, index: int = config.CAMERA_INDEX):
         self._cv2 = _cv2()
+        self._index = index
         self._cap = self._cv2.VideoCapture(index)
         self._cap.set(self._cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_WIDTH)
         self._cap.set(self._cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
@@ -52,10 +54,21 @@ class Camera:
         self._cap.release()
 
     def _loop(self) -> None:
+        failures = 0
         while self._running:
-            ok, frame = self._cap.read()
+            ok, frame = self._cap.read() if self._cap.isOpened() else (False, None)
             if not ok:
+                # Do not spin: a missing camera must not eat a CPU core on the
+                # real-time box. Try to reopen it every few seconds.
+                failures += 1
+                with self._lock:
+                    self._frame = None
+                time.sleep(0.2)
+                if failures % 25 == 0:
+                    self._cap.release()
+                    self._cap = self._cv2.VideoCapture(self._index)
                 continue
+            failures = 0
             with self._lock:
                 self._frame = frame
 
