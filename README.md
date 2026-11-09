@@ -23,22 +23,33 @@ dimensions when you have them (see `docs/MEASURE-THE-ARM.md`).
 ## Architecture
 
 ```
-Browser (three.js twin)  <--WebSocket-->  Server (Node/TS controller)
-        |                                     |
-        |  MJPEG camera feed                  +-- SimulatedAdapter (default)
-        v                                        +-- FrankaAdapter (FCI bridge -> Panda)
-Vision service (Python, OpenCV)
-        |
-overhead USB camera over the board
+Browser (twin) --> Caddy :5909 --> /robot-ws --> robot server (Node, 127.0.0.1:3001)
+                                |                 controller + chess loop
+                                |                    | HTTP + lease + heartbeat
+                                |                    v
+                                |               Franka bridge (panda-py 1.1.1 /
+                                |               libfranka 0.9.2, 127.0.0.1:3002)
+                                |                    | FCI (dedicated NIC, RT kernel)
+                                |                    v
+                                |               Panda control unit
+                                `--> /vision/* --> vision service (127.0.0.1:8081)
 ```
 
-Three layers: kinematics + twin (TS), vision (Python), and a swappable
-hardware adapter. The twin and the solver are the single source of truth; the
-server drives them and the handoff to the arm goes only through `RobotAdapter`.
+- The **Franka bridge** (`apps/franka`) is the only process that commands the
+  arm (lock file, loopback only, one lease with heartbeat watchdog). It
+  validates every goal again and runs in dry-run mode by default.
+- The **robot server** (`apps/server`) validates every goal (Panda limits,
+  self-collision, floor, the straight joint path), sends only whole goals to
+  the real robot, starts disabled, and runs the chess loop:
+  camera -> board state -> decision -> pick/place -> camera verification.
+  The decision step is pluggable (`apps/server/src/decider.ts`).
+- The ROS 2 / MoveIt bridge (`apps/ws_bridge`) is optional and off by default.
+
+Bring-up on the NUC: [`docs/NUC-BRINGUP.md`](docs/NUC-BRINGUP.md).
 
 ## Run it
 
-Prerequisites: Node 20+, pnpm, Python 3.12+.
+Prerequisites: Node 22+, pnpm, Python 3.10+.
 
 ```bash
 pnpm install
@@ -81,29 +92,14 @@ The server and twin use this so a detected piece becomes a robot-frame target.
 
 ### Connect to the real Panda (FCI)
 
-The Franka Control Interface drives the arm through the `FrankaAdapter` +
-`apps/franka/franka_bridge.py`. Setup (only for the real arm):
-
-1. Wire the workstation to the **Control (shop-floor)** LAN port on the Panda
-   control unit — not the port on the arm's base.
-2. Install the **FCI feature** via Desk → Settings → System → Installed Features
-   (needs an FCI license on Franka World).
-3. Give Control a static IP (e.g. `172.16.0.2`) and the workstation a matching
-   one (e.g. `172.16.0.1`, same `/24`). Desk is then at `https://<control-ip>`.
-4. In Desk: release the brakes, then **Activate FCI**.
-5. Start the bridge and the server with `ROBOT_ADAPTER=franka`:
+Use the runbook [`docs/NUC-BRINGUP.md`](docs/NUC-BRINGUP.md): real-time
+kernel, FCI network, read-only FCI check, dry-run, then low speed. For a quick
+local dry-run without a robot:
 
 ```bash
-cd apps/franka
-.venv/bin/pip install -r requirements.txt
-FRANKA_HOST=<control-ip> .venv/bin/python franka_bridge.py &   # http://localhost:3002
-
-cd ../..
-ROBOT_ADAPTER=franka FRANKA_BRIDGE_URL=http://localhost:3002 pnpm dev:server
+FRANKA_DRY_RUN=1 python3 apps/franka/franka_bridge.py &        # 127.0.0.1:3002
+ROBOT_ADAPTER=franka CHESS_REQUIRE_VISION=0 pnpm dev:server
 ```
-
-Verify with `curl <control-ip>/robot-state` (or the bridge's `GET /state`): it
-returns the live joint angles. The twin then mirrors the real pose.
 
 ### Calibrate the board placement
 
@@ -117,7 +113,7 @@ measurement would be rotated 90° wrong.
 To set the twin's `BOARD.origin` from a measurement taken in the robot frame:
 
 1. Get the board's **a1-corner** position in `B` (mm, X forward / Y left / Z up).
-   Easiest: drive the gripper tip onto the a1 corner and read `O_T_EE` from FCI.
+   Hand-guide the TCP onto the a1 corner and run `apps/franka/fci_check.py`.
 2. Convert it and check reachability:
 
 ```bash
@@ -169,12 +165,13 @@ A full chess loop is wired in:
   (grab → lift → place; captures go to a tray).
 - **Opponent mode**: toggle a bot with a variable-ElO slider (minimax with
   alpha-beta + material/piece-square eval; depth & noise scale with Elo).
-  Alternatively, set `LLM_AGENT_URL` to send the FEN to a model-router endpoint
-  that returns a move as `{"san": "..."}` — the server uses it instead of the bot.
+  Alternatively, set `CHESS_DECIDER_URL` to a service that gets
+  `{"fen", "legal", "side"}` and returns `{"uci": "..."}` or `{"san": "..."}`
+  (an LLM agent or a learned policy). Only legal moves are accepted.
 
 ```bash
 # optional: play against an agent through the model router
-LLM_AGENT_URL=http://<router>/move pnpm dev:server
+CHESS_DECIDER_URL=http://<router>/move pnpm dev:server
 ```
 
 ### Chess
@@ -191,27 +188,21 @@ planMove(pos, uciToMove(pos, "e2e4")); // [{pick e2}, {place e4}]
 
 ## Safety
 
-- Motion only happens when **Enable** is on (the server refuses targets while
-  disabled).
-- Joint and velocity limits are enforced in the IK and trajectory generation.
-- **E-Stop** disables the arm and clears the path.
-- The real arm is reached only through `RobotAdapter`; start with the
-  `SimulatedAdapter`, then swap in the `SerialAdapter` once the board is known.
+- The user stop (external activation device) on the robot is the safety
+  function. The twin's E-Stop is a software stop.
+- The server starts disabled with a real robot; a person must press Enable.
+- Every goal is validated twice (server and bridge); an IK target that is not
+  reached is never executed; the real robot only gets whole goals.
+- Losing the twin connection, the server heartbeat, or a motion failure stops
+  and disables the robot. Recovery is an operator action.
 
 ## Quality gates
 
 ```bash
 pnpm -r typecheck
-pnpm -r test       # 50 unit tests (kinematics, config, chess, protocol, hardware, server)
+pnpm -r test       # TS unit tests
+pnpm -r lint
+(cd apps/franka && python -m pytest tests)   # bridge
+(cd apps/vision && python -m pytest tests)   # vision
 pnpm -r build
 ```
-
-## Roadmap (already done)
-
-- The Franklyn model already uses the **official** Panda kinematics (see
-  `packages/robot-config/src/config.ts`), so no measurement is needed.
-- The board-placement calibration is handled by `pnpm --filter @robot/server calibrate`.
-- The `FrankaAdapter` + FCI bridge (`apps/franka`) drive the real Panda.
-- Mount the overhead USB camera and calibrate the board (ArUco/homography) so
-  `detect` returns robot-frame targets (see "Calibrate the board" above).
-- (Optional) swap the piece detector for a classifier (YOLOv8n) for full chess.

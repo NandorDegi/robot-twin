@@ -27,6 +27,12 @@ def main() -> int:
         time.sleep(0.01)
     dt = time.monotonic() - t0
     print("q (deg):", [round(math.degrees(v), 1) for v in last.q])
+    # O_T_EE is column-major 4x4; the translation is elements 12..14 (m).
+    # It is the TCP set in Desk (Franka Hand: 0.1034 m below the flange).
+    t = last.O_T_EE
+    print(f"TCP in the base frame (mm): X={t[12] * 1000:.1f} Y={t[13] * 1000:.1f} Z={t[14] * 1000:.1f}")
+    f = last.F_T_EE
+    print(f"F_T_EE z offset (mm, expect 103.4 for the Franka Hand): {f[14] * 1000:.1f}")
     print("robot_mode:", last.robot_mode)
     print("current_errors:", last.current_errors)
     print(f"100 state reads in {dt:.2f} s")

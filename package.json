@@ -2,11 +2,11 @@
   "name": "robot-twin",
   "version": "0.1.0",
   "private": true,
-  "description": "Digital twin + vision for a 4-DOF robot arm (chess pick & place). Configurable model, closed-form IK, three.js twin, pluggable hardware adapter.",
+  "description": "Digital twin, vision and chess loop for a Franka Emika Panda (FER), 7-DOF. Three.js twin, LM IK, panda-py bridge.",
   "type": "module",
   "packageManager": "pnpm@11.22.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "pnpm -r build",
@@ -16,5 +16,11 @@
     "dev:twin": "pnpm --filter twin dev",
     "dev:server": "pnpm --filter server dev",
     "dev:vision": "cd apps/vision && python3 -m vision"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0",
+    "typescript-eslint": "^8.72.1"
   }
 }
