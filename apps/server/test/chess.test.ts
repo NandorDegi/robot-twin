@@ -11,7 +11,7 @@ async function setup(observer: BoardObserver | null = null, decider?: MoveDecide
   const controller = new RobotController(defaultChain, new SimulatedAdapter(7), { controlHz: 200, simTimeScale: 50 });
   await controller.start();
   controller.setEnabled(true);
-  const chess = new ChessSession(controller, { observer, decider, requireVision: false });
+  const chess = new ChessSession(controller, { observer, decider, requireVision: false, settleMs: 0 });
   return { controller, chess };
 }
 

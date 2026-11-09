@@ -35,10 +35,22 @@ const controller = new RobotController(chain, adapter, {
 });
 
 const visionUrl = process.env.VISION_URL ?? "";
+
+function parsePose(v: string | undefined): number[] | undefined {
+  if (!v) return undefined;
+  const q = v.split(",").map((x) => Number(x.trim()));
+  if (q.length !== 7 || !q.every(Number.isFinite)) {
+    console.error(`[robot] CHESS_OBSERVE_POSE must be 7 comma-separated radians, got "${v}"`);
+    process.exit(2);
+  }
+  return q;
+}
 const chess = new ChessSession(controller, {
   decider: deciderFromEnv(new EngineDecider(Number(process.env.CHESS_ELO ?? 1200))),
   observer: visionUrl ? new VisionObserver(visionUrl) : null,
   requireVision: process.env.CHESS_REQUIRE_VISION ? process.env.CHESS_REQUIRE_VISION === "1" : adapter.isReal,
+  observePose: parsePose(process.env.CHESS_OBSERVE_POSE),
+  settleMs: Number(process.env.CHESS_SETTLE_MS ?? 500),
 });
 
 async function main(): Promise<void> {

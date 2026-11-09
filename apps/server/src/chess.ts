@@ -1,6 +1,4 @@
-import {
-  APPROACH_HEIGHT_MM,
-} from "@robot/robot-config";
+import { APPROACH_HEIGHT_MM, PANDA_READY_POSE } from "@robot/robot-config";
 import {
   applyMove,
   diffOccupancy,
@@ -41,7 +39,22 @@ export interface ChessSessionOptions {
   requireVision?: boolean;
   /** Colour the robot plays. Default black. */
   robotColor?: Color;
+  /**
+   * Joint pose (rad) where the arm does not hide the board from the overhead
+   * camera. The robot goes there before every camera check and after each
+   * move. Default: the ready pose turned 90 deg about joint1 (arm to the
+   * robot's left). Set CHESS_OBSERVE_POSE for your cell.
+   */
+  observePose?: number[];
+  /** Wait (ms) after reaching the observe pose before reading the camera. */
+  settleMs?: number;
 }
+
+export const DEFAULT_OBSERVE_POSE: number[] = (() => {
+  const q = [...PANDA_READY_POSE];
+  q[0] = Math.PI / 2;
+  return q;
+})();
 
 class LoopError extends Error {
   constructor(
@@ -73,6 +86,8 @@ export class ChessSession {
   private readonly observer: BoardObserver | null;
   private readonly requireVision: boolean;
   private readonly robotColor: Color;
+  private readonly observePose: number[];
+  private readonly settleMs: number;
   private busy = false;
   private lastSan = "";
   private status: LoopStatus = { stage: "idle", message: "", mismatches: [], verified: false };
@@ -87,6 +102,8 @@ export class ChessSession {
     this.observer = opts.observer ?? null;
     this.requireVision = opts.requireVision ?? controller.isReal;
     this.robotColor = opts.robotColor ?? "b";
+    this.observePose = opts.observePose ?? DEFAULT_OBSERVE_POSE;
+    this.settleMs = opts.settleMs ?? 500;
   }
 
   subscribe(fn: () => void): () => void {
@@ -238,8 +255,7 @@ export class ChessSession {
       const target = "tray" in step ? trayTarget() : squareToTarget(step.square!);
       await this.pickOrPlace(target, isPick, "tray" in step ? "tray" : step.square!);
     }
-    const parkRes = await this.controller.home();
-    if (!parkRes.ok) throw new LoopError(`could not return to the ready pose: ${parkRes.error}`);
+    await this.park();
 
     // The move is physically done: track it.
     this.pos = next;
@@ -282,8 +298,17 @@ export class ChessSession {
     await must(this.controller.moveToPosition(above, "down"), "lift from");
   }
 
+  /** Move the arm out of the camera view (only when motion is enabled). */
+  private async park(): Promise<void> {
+    if (!this.controller.isEnabled) return;
+    const r = await this.controller.moveJoints(this.observePose);
+    if (!r.ok) throw new LoopError(`could not reach the observe pose: ${r.error}`);
+  }
+
   private async observeOrThrow() {
     if (!this.observer) throw new LoopError("vision not configured (VISION_URL)");
+    await this.park();
+    if (this.settleMs > 0) await new Promise((r) => setTimeout(r, this.settleMs));
     const o = await this.observer.observe();
     if (!o.ok) throw new LoopError(o.error);
     return o.occupancy;
