@@ -70,15 +70,15 @@ export class IntuitionBrain implements Brain {
     this.name = `intuition:${model.name}`;
   }
 
-  async candidates(input: DecisionInput): Promise<{ candidates: Candidate[]; elapsedMs: number }> {
+  async candidates(input: DecisionInput): Promise<{ candidates: Candidate[]; elapsedMs: number; model: string }> {
     const t0 = Date.now();
     const pos = parseFen(input.fen);
     const raw = await this.model.policy(input);
-    return { candidates: legalTopK(pos, raw, this.opts.topK ?? 5), elapsedMs: Date.now() - t0 };
+    return { candidates: legalTopK(pos, raw, this.opts.topK ?? 5), elapsedMs: Date.now() - t0, model: raw.model };
   }
 
   async decide(input: DecisionInput): Promise<Decision> {
-    const { candidates, elapsedMs } = await this.candidates(input);
+    const { candidates, elapsedMs, model } = await this.candidates(input);
     const pick = this.pick(candidates);
     return {
       uci: pick.uci,
@@ -86,7 +86,7 @@ export class IntuitionBrain implements Brain {
       brain: this.name,
       candidates,
       rationale:
-        `Intuition (${this.model.name}, no search): ${pick.san} at ${(pick.prob * 100).toFixed(0)}%. ` +
+        `Intuition (${model}, no search): ${pick.san} at ${(pick.prob * 100).toFixed(0)}%. ` +
         `Other candidates: ${candidates.filter((c) => c !== pick).map((c) => `${c.san} ${(c.prob * 100).toFixed(0)}%`).join(", ") || "none"}.`,
       elapsedMs,
     };
