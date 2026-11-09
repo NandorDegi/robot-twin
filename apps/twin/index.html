@@ -48,6 +48,8 @@
       <div id="panel">
         <h1>Robot Twin</h1>
         <div id="status"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></div>
+        <div id="safetyBanner" class="hint" style="color:#f2b84b">The E-Stop button here is a software stop only. The user stop (external activation device) on the robot is the safety stop: keep it in your hand.</div>
+        <div id="loopStatus" class="hint">loop: –</div>
 
         <div class="section">
           <h2>Joints (deg)</h2>
@@ -90,6 +92,9 @@
           </div>
           <div class="buttons">
             <button id="btnReset">New game</button>
+            <button id="btnSync" title="Read the board with the camera, apply your move, then the robot answers">Sync from camera</button>
+            <button id="btnRobotMove" title="The decider chooses a move and the robot plays it">Robot move</button>
+            <button id="btnClearFault" title="You fixed the board; leave the fault state">Clear fault</button>
           </div>
           <div class="row">
             <label>Twin Elo</label>

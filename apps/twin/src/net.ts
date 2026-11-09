@@ -70,6 +70,7 @@ function applyServerMessage(msg: any, onTargetResult?: (ok: boolean, error: numb
         gripperOpen: Boolean(msg.gripperOpen),
         enabled: Boolean(msg.enabled),
         mode: msg.mode ?? s.mode,
+        everReal: s.everReal || (typeof msg.mode === "string" && (msg.mode.startsWith("real") || msg.mode.startsWith("fault"))),
       });
       break;
     case "robot":
@@ -92,6 +93,14 @@ function applyServerMessage(msg: any, onTargetResult?: (ok: boolean, error: numb
         opponentEnabled: Boolean(msg.opponentEnabled),
         elo: Number(msg.elo ?? s.elo),
         lastError: "",
+      });
+      break;
+    case "loop":
+      s.setState({
+        loopStage: String(msg.stage ?? ""),
+        loopMessage: String(msg.message ?? ""),
+        loopMismatches: Array.isArray(msg.mismatches) ? msg.mismatches.map(String) : [],
+        decider: String(msg.decider ?? ""),
       });
       break;
     case "error":

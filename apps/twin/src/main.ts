@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { DragControls } from "three/examples/jsm/controls/DragControls.js";
 import { forwardKinematics, mat4TransformPoint } from "@robot/kinematics";
-import { buildChain, defaultArmConfig } from "@robot/robot-config";
+import { PANDA_READY_POSE, PANDA_TCP_OFFSET_MM, buildChain, defaultArmConfig } from "@robot/robot-config";
 import { parseFen, spokenToSan } from "@robot/chess";
 import { buildArm } from "./arm";
 import { buildBoard } from "./chessboard";
@@ -286,7 +286,7 @@ function renderPieces(pieces: any[]): void {
     const dot = document.createElement("div");
     const color = p.color === "white" ? "#fff" : "#111";
     dot.style.cssText = `position:absolute;left:${((p.x / frameDims.w) * 100).toFixed(2)}%;top:${((p.y / frameDims.h) * 100).toFixed(2)}%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:${color};border:2px solid #39c66b;pointer-events:auto;cursor:pointer;`;
-    dot.title = `${p.color} ${p.type} ${p.square ? p.square.join("") : "?"}`;
+    dot.title = `${p.color} ${p.type} ${typeof p.square === "string" ? p.square : "?"}`;
     dot.onclick = () => {
       if (Array.isArray(p.target)) {
         const t = p.target as [number, number, number];
@@ -345,7 +345,9 @@ function ui() {
     badge.classList.toggle("on", s.connected);
     statusText.textContent = s.connected
       ? `connected · ${s.mode}${s.enabled ? "" : " · disabled"}`
-      : "offline (local sim)";
+      : s.everReal
+        ? "DISCONNECTED: the server stopped the robot; the pose shown is the last known one"
+        : "offline (local sim, not a robot)";
   });
 
   // Joint sliders.
@@ -365,17 +367,21 @@ function ui() {
     const val = document.createElement("span");
     val.className = "val";
     val.textContent = "0°";
-    range.oninput = () => {
-      val.textContent = `${Number(range.value).toFixed(1)}°`;
-      const q = chain.joints.map((j2, k2) => {
+    const sliderQ = () =>
+      chain.joints.map((_j2, k2) => {
         const input = inputs[k2];
         return input ? (Number(input.value) * Math.PI) / 180 : 0;
       });
-      // Preview locally, and send if connected.
+    range.oninput = () => {
+      val.textContent = `${Number(range.value).toFixed(1)}°`;
+      // Offline: preview in the local sim while dragging.
+      if (!useTwin.getState().connected) localSim.setJoint(sliderQ());
+    };
+    // Connected: send ONE goal when the slider is released, not a stream of
+    // goals while it is dragged (each one would be a separate robot motion).
+    range.onchange = () => {
       if (useTwin.getState().connected) {
-        socket?.send({ type: "setJointState", q } satisfies ClientMessage);
-      } else {
-        localSim.setJoint(q);
+        socket?.send({ type: "setJointState", q: sliderQ() } satisfies ClientMessage);
       }
     };
     row.append(label, range, val);
@@ -506,7 +512,7 @@ drag.addEventListener("drag", () => {
 });
 
 // ---- animation loop -------------------------------------------------------
-let smoothedQ = chain.joints.map((j) => (j.min + j.max) / 2);
+let smoothedQ = [...PANDA_READY_POSE];
 let last = performance.now();
 let frames = 0;
 let hudTime = 0;
@@ -583,6 +589,22 @@ function chessUi(): void {
   document.getElementById("btnReset")!.onclick = () => {
     socket?.send({ type: "resetGame" } satisfies ClientMessage);
   };
+  // Closed loop: camera -> board -> decision -> pick/place -> camera check.
+  document.getElementById("btnSync")!.onclick = () => socket?.send({ type: "syncBoard" } satisfies ClientMessage);
+  document.getElementById("btnRobotMove")!.onclick = () => socket?.send({ type: "robotMove" } satisfies ClientMessage);
+  document.getElementById("btnClearFault")!.onclick = () => socket?.send({ type: "clearFault" } satisfies ClientMessage);
+  const loopEl = document.getElementById("loopStatus")!;
+  let lastLoop = "";
+  useTwin.subscribe((s) => {
+    const txt = `loop: ${s.loopStage}${s.loopMessage ? ` · ${s.loopMessage}` : ""}${
+      s.loopMismatches.length ? ` · MISMATCH on ${s.loopMismatches.join(", ")}` : ""
+    }${s.decider ? ` · decider ${s.decider}` : ""}`;
+    if (txt !== lastLoop) {
+      lastLoop = txt;
+      loopEl.textContent = txt;
+      loopEl.style.color = s.loopStage === "fault" ? "#ff6b6b" : "";
+    }
+  });
   eloRange.oninput = () => {
     eloVal.textContent = eloRange.value;
     socket?.send({ type: "setOpponent", enabled: true, elo: Number(eloRange.value) } satisfies ClientMessage);
@@ -598,11 +620,14 @@ function animate(): void {
   const s = useTwin.getState();
 
   // Determine the goal joint state: server-provided when connected, else local.
-  const goal = s.connected ? s.q : localSim.tick(dt, 12);
-  if (s.connected) localSim.tick(dt, 12); // keep local sim warm
+  // Connected: show the server (robot) state. Disconnected after a real robot:
+  // freeze at the last known pose; never animate a simulation in its place.
+  const useLocal = !s.connected && !s.everReal;
+  const goal = useLocal ? localSim.tick(dt, 12) : s.q;
+  if (!useLocal) localSim.tick(dt, 12); // keep local sim warm
 
   // Offline: publish the local sim state so the sliders track the arm.
-  if (!s.connected) {
+  if (useLocal) {
     const frame = Math.floor(now / 33);
     if (frame !== pubFrame) {
       pubFrame = frame;
@@ -647,7 +672,7 @@ function animate(): void {
 function eePosFromChain(q: number[]): [number, number, number] {
   const fk = forwardKinematics(chain, q);
   // End-effector reference is the gripper tip, not the tool-frame origin.
-  return mat4TransformPoint(fk.pose, [0, 0, 130]);
+  return mat4TransformPoint(fk.pose, [0, 0, PANDA_TCP_OFFSET_MM]);
 }
 
 window.addEventListener("resize", () => {

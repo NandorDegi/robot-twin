@@ -1,10 +1,5 @@
-import {
-  InverseKinematicsSolver,
-  defaultPandaGripper,
-  type JointState,
-  type KinematicChain,
-  type Vec3,
-} from "@robot/kinematics";
+import type { InverseKinematicsSolver, JointState, KinematicChain, Vec3 } from "@robot/kinematics";
+import { PANDA_READY_POSE, createPandaSolver } from "@robot/robot-config";
 
 /**
  * Offline fallback so the twin is fully interactive even without the server.
@@ -16,22 +11,15 @@ export class LocalSim {
   private current: JointState;
 
   constructor(private readonly chain: KinematicChain) {
-    this.solver = new InverseKinematicsSolver(chain, {
-      positionTolerance: 1.0,
-      eeOffset: [0, 0, 130],
-      avoidSelfCollision: true,
-      baseRadius: 55,
-      gripper: defaultPandaGripper,
-    });
-    this.current = chain.joints.map((j) => (j.min + j.max) / 2);
+    this.solver = createPandaSolver(chain);
+    this.current = [...PANDA_READY_POSE];
     this.goal = this.current.slice();
   }
 
   setTarget(target: Vec3): boolean {
     const res = this.solver.solve({ position: target }, { seed: this.current });
-    // Always follow the result. `solve` only returns a collision-free
-    // configuration, so the arm moves toward it or safely holds.
-    this.goal = res.q;
+    // Same rule as the server: a target that is not reached is not executed.
+    if (res.success) this.goal = res.q;
     return res.success;
   }
 
@@ -44,7 +32,7 @@ export class LocalSim {
   }
 
   home(): void {
-    this.goal = this.chain.joints.map((j) => (j.min + j.max) / 2);
+    this.goal = [...PANDA_READY_POSE];
   }
 
   /** Advance the interpolation. Returns the current smoothed joint state. */

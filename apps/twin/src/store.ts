@@ -20,6 +20,12 @@ interface TwinState {
   opponentEnabled: boolean;
   elo: number;
   lastError: string;
+  /** True once the server reported a real robot: never fall back to the local sim then. */
+  everReal: boolean;
+  loopStage: string;
+  loopMessage: string;
+  loopMismatches: string[];
+  decider: string;
   setQ(q: number[]): void;
   setState(partial: Partial<Omit<TwinState, "setQ" | "setState">>): void;
 }
@@ -42,6 +48,11 @@ export const useTwin = create<TwinState>((set) => ({
   opponentEnabled: true,
   elo: 1200,
   lastError: "",
+  everReal: false,
+  loopStage: "idle",
+  loopMessage: "",
+  loopMismatches: [],
+  decider: "",
   setQ: (q) => set({ q }),
   setState: (partial) => set(partial),
 }));
