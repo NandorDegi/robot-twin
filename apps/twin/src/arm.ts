@@ -14,10 +14,8 @@ export interface ArmView {
   loadMeshes(): Promise<boolean>;
 }
 
-const JOINT_COLOR = 0x2f6fd6;
 const LINK_COLOR = 0xbfc5cc;
 const BASE_COLOR = 0x1d222b;
-const FINGER_COLOR = 0x2a2e36;
 
 /** Official Panda (FER) visual meshes, keyed by link index (0..7) and "hand". */
 const MESH_FILES: Record<string, string> = {
@@ -54,7 +52,6 @@ export function buildArm(chain: KinematicChain): ArmView {
   plate.position.z = 7;
   base.add(plate);
 
-  const firstJoint = chain.joints[0]!;
   const riserLen = matrixPosition(chain.joints[0]!.origin).length();
   if (riserLen > 1e-6) {
     const pedestal = new THREE.Mesh(

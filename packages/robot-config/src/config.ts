@@ -1,5 +1,5 @@
 import limitsJson from "../panda-limits.json";
-import { mat4Identity, mat4Mul, mat4RotX, mat4RotY, mat4RotZ, mat4Translation } from "@robot/kinematics";
+import { mat4Mul, mat4RotX, mat4RotY, mat4RotZ, mat4Translation } from "@robot/kinematics";
 import type { KinematicChain, KinematicJoint, Mat4 } from "@robot/kinematics";
 
 /** Axis of a joint or base, written in config as 'x' | 'y' | 'z'. */

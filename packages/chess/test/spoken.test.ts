@@ -6,7 +6,7 @@ const CASTLE_POS = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
 
 describe("spokenToSan", () => {
   it("maps simple pawn and piece moves", () => {
-    let pos = initialPosition();
+    const pos = initialPosition();
     expect(spokenToSan(pos, "e4")).toBe("e4");
     expect(spokenToSan(pos, "pawn e4")).toBe("e4");
     expect(spokenToSan(pos, "e four")).toBe("e4");

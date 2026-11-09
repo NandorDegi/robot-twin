@@ -354,7 +354,7 @@ function ui() {
   const inputs: HTMLInputElement[] = [];
   const vals: HTMLSpanElement[] = [];
   sliders.innerHTML = "";
-  chain.joints.forEach((j, i) => {
+  chain.joints.forEach((j) => {
     const row = document.createElement("div");
     row.className = "row";
     const label = document.createElement("label");
@@ -512,7 +512,7 @@ drag.addEventListener("drag", () => {
 });
 
 // ---- animation loop -------------------------------------------------------
-let smoothedQ = [...PANDA_READY_POSE];
+const smoothedQ = [...PANDA_READY_POSE];
 let last = performance.now();
 let frames = 0;
 let hudTime = 0;

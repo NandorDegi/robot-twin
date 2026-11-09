@@ -1,6 +1,5 @@
 import {
   legalMoves,
-  parseSquare,
   pieceAt,
   squareName,
   type Move,
@@ -31,7 +30,7 @@ export function spokenToSan(pos: Position, text: string): string | null {
   // ---- castling ---------------------------------------------------------
   if (/\b(castle|castles|castling|o-o|o-o-o)\b/.test(t)) {
     const long = /\b(long|queenside|queen side|o-o-o)\b/.test(t);
-    const short = /\b(short|kingside|king side|o-o)\b/.test(t);
+    const _short = /\b(short|kingside|king side|o-o)\b/.test(t);
     const castleMoves = legalMoves(pos, pos.turn).filter((m) =>
       m.flags.includes("castle-k") || m.flags.includes("castle-q"),
     );

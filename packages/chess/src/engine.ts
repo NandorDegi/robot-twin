@@ -148,10 +148,10 @@ export function isSquareAttacked(b: Board, sq: Square, by: Color): boolean {
 }
 
 export function isInCheck(pos: Position, color: Color): boolean {
-  let king = findKing(pos.board, color);
+  const king = findKing(pos.board, color);
   // In applyMove we detect check; guard a missing king as not in check.
   if (!king) return false;
-  let attacker: Color = OPP[color];
+  const attacker: Color = OPP[color];
   return isSquareAttacked(pos.board, king, attacker);
 }
 

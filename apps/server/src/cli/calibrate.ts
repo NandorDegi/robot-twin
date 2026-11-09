@@ -23,22 +23,20 @@
  *     pnpm --filter @robot/server calibrate --from-robot X Y Z [--h1 X Y Z]
  *     pnpm --filter @robot/server calibrate --out board_calibration.json
  */
-import { InverseKinematicsSolver, type Vec3 } from "@robot/kinematics";
 import {
   APPROACH_HEIGHT_MM,
-  PANDA_TCP_OFFSET_MM,
   buildChain,
   createPandaSolver,
   defaultArmConfig,
   seedToward,
   toolDownRotation,
 } from "@robot/robot-config";
+import type { Vec3 } from "@robot/kinematics";
 import { BOARD } from "@robot/chess";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { writeFileSync } from "node:fs";
 
-const EE_OFFSET: Vec3 = [0, 0, PANDA_TCP_OFFSET_MM];
 
 /** B -> T: (x, y, z)_B  ->  (x, z, -y)_T. */
 function robotToTwin(p: Vec3): [number, number, number] {

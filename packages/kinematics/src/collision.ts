@@ -1,5 +1,5 @@
 import { forwardKinematics } from "./fk";
-import { mat4TranslationOf, mat4TransformPoint, vec3Subtract, vec3Add, vec3Scale, vec3Dot, vec3Length, vec3Normalize } from "./math3d";
+import { mat4TranslationOf, mat4TransformPoint, vec3Subtract, vec3Add, vec3Scale, vec3Dot, vec3Length } from "./math3d";
 import type { KinematicChain, JointState, Vec3, GripperConfig } from "./types";
 
 /**
