@@ -748,8 +748,13 @@ def post_sim_scene(body, _q):
     moves = body.get("moves") or []
     if not isinstance(moves, list) or not all(isinstance(m, list) and len(m) == 2 for m in moves):
         raise ApiError("moves must be [[from, to], ...]")
+    pieces = body.get("pieces")  # a whole position: {"e4": "w", ...} (dev tools, the loop e2e)
+    if pieces is not None and not (isinstance(pieces, dict) and all(
+            isinstance(k, str) and len(k) == 2 and k[0] in "abcdefgh" and k[1] in "12345678" and v in ("w", "b")
+            for k, v in pieces.items())):
+        raise ApiError('pieces must be {"<square>": "w" | "b", ...}')
     cam.scene.set(preset=preset, markers=body.get("markers"), light=body.get("light"), glare=body.get("glare"),
-                  shadow=body.get("shadow"), moves=[[str(a), str(b)] for a, b in moves])
+                  shadow=body.get("shadow"), moves=[[str(a), str(b)] for a, b in moves], pieces=pieces)
     return {"ok": True, **cam.scene.as_dict()}
 
 

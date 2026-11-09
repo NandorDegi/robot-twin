@@ -257,7 +257,7 @@ try {
 } catch {
   socket = null;
 }
-mountBrainPanel(WS_URL);
+mountBrainPanel((m) => socket?.send(m));
 
 // Live camera feed from the vision service (MJPEG).
 const feedImg = document.getElementById("feedImg") as HTMLImageElement;
@@ -525,8 +525,6 @@ let eePos = new THREE.Vector3();
 function chessUi(): void {
   const statusEl = document.getElementById("chessStatus")!;
   const sanInput = document.getElementById("sanInput") as HTMLInputElement;
-  const eloRange = document.getElementById("eloRange") as HTMLInputElement;
-  const eloVal = document.getElementById("eloVal")!;
 
   // Reflect server chess state onto the board and the HUD.
   let lastStatus = "";
@@ -535,8 +533,10 @@ function chessUi(): void {
     // Only touch the status text when the game state actually changed (don't
     // rewrite DOM on every 30 Hz state broadcast).
     const status =
-      (s.lastError ? `⚠ ${s.lastError} · reset with "New game"` : null) ??
-      `${s.turn === "w" ? "Your turn (White)" : "Twin is thinking (Black)"}${s.check ? " · check" : ""} · last: ${s.lastSan || "—"} · Twin Elo ${s.elo}`;
+      (s.lastError ? `⚠ ${s.lastError}` : null) ??
+      (s.loopRunning
+        ? `${s.turn === "w" ? "White" : "Black"} to move${s.check ? " · check" : ""} · last: ${s.lastSan || "—"}`
+        : "No game: press Start in the Robot brain panel");
     if (status !== lastStatus) {
       lastStatus = status;
       statusEl.textContent = status;
@@ -588,30 +588,18 @@ function chessUi(): void {
     rec.start();
   };
 
-  // New game + elo (the twin is always the opponent).
-  document.getElementById("btnReset")!.onclick = () => {
-    socket?.send({ type: "resetGame" } satisfies ClientMessage);
-  };
-  // Closed loop: camera -> board -> decision -> pick/place -> camera check.
-  document.getElementById("btnSync")!.onclick = () => socket?.send({ type: "syncBoard" } satisfies ClientMessage);
-  document.getElementById("btnRobotMove")!.onclick = () => socket?.send({ type: "robotMove" } satisfies ClientMessage);
-  document.getElementById("btnClearFault")!.onclick = () => socket?.send({ type: "clearFault" } satisfies ClientMessage);
   const loopEl = document.getElementById("loopStatus")!;
   let lastLoop = "";
   useTwin.subscribe((s) => {
     const txt = `loop: ${s.loopStage}${s.loopMessage ? ` · ${s.loopMessage}` : ""}${
       s.loopMismatches.length ? ` · MISMATCH on ${s.loopMismatches.join(", ")}` : ""
-    }${s.decider ? ` · decider ${s.decider}` : ""}`;
+    }${s.decider ? ` · brain ${s.decider}` : ""}`;
     if (txt !== lastLoop) {
       lastLoop = txt;
       loopEl.textContent = txt;
-      loopEl.style.color = s.loopStage === "fault" ? "#ff6b6b" : "";
+      loopEl.style.color = s.loopStage === "halted" || s.loopStage === "paused" ? "#ff6b6b" : "";
     }
   });
-  eloRange.oninput = () => {
-    eloVal.textContent = eloRange.value;
-    socket?.send({ type: "setOpponent", enabled: true, elo: Number(eloRange.value) } satisfies ClientMessage);
-  };
 }
 
 function animate(): void {

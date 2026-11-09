@@ -1,8 +1,10 @@
 /**
- * Brain panel: shows the robot's loop (state, decision, rationale, self-check)
- * and lets the human answer when the robot stops and asks. Uses its own
- * WebSocket to the server so it stays independent of the main twin code.
+ * Brain panel: the controls of the one chess loop (Start, Stop, Resume), the
+ * robot's decision, rationale and self-check, and the answers when the robot
+ * stops and asks. It uses the twin's WebSocket (net.ts).
  */
+import type { ClientMessage } from "@robot/protocol";
+import { serverMessageListeners } from "./net";
 
 interface Ask {
   reason: string;
@@ -26,7 +28,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
   return e;
 }
 
-export function mountBrainPanel(wsUrl: string): void {
+export function mountBrainPanel(sendMessage: (m: ClientMessage) => void): void {
   const box = el("div", {
     id: "brainPanel",
     style:
@@ -43,8 +45,7 @@ export function mountBrainPanel(wsUrl: string): void {
   box.append(status, controls, decision, ask, sim, logEl);
   document.getElementById("app")?.append(box);
 
-  let sock: WebSocket | null = null;
-  const send = (msg: Record<string, unknown>) => sock?.readyState === WebSocket.OPEN && sock.send(JSON.stringify({ type: "brain", ...msg }));
+  const send = (msg: Omit<Extract<ClientMessage, { type: "brain" }>, "type">) => sendMessage({ type: "brain", ...msg });
   const log = (line: string) => {
     logEl.textContent = `${line}\n${logEl.textContent ?? ""}`.slice(0, 4000);
   };
@@ -57,6 +58,7 @@ export function mountBrainPanel(wsUrl: string): void {
 
   button(controls, "Start (robot = Black)", () => send({ cmd: "start", robotColor: "b" }), "primary");
   button(controls, "Start (robot = White)", () => send({ cmd: "start", robotColor: "w" }));
+  button(controls, "Resume", () => send({ cmd: "resume" }));
   button(controls, "Stop", () => send({ cmd: "stop" }), "warn");
 
   // Simulator helpers (BRAIN_OBSERVER=sim only): play the human's move, inject faults.
@@ -74,6 +76,7 @@ export function mountBrainPanel(wsUrl: string): void {
     }
     ask.style.display = "block";
     ask.append(el("div", { style: "font-weight:600;margin-bottom:4px" }, a.message));
+    ask.append(el("div", { style: "color:#e0b0a0" }, "The robot is now disabled. Answer, then press Enable to let it move again."));
     for (const h of a.hints) ask.append(el("div", { style: "color:#e0b0a0" }, `- ${h}`));
     const opts = el("div", { class: "buttons" });
     ask.append(opts);
@@ -81,11 +84,11 @@ export function mountBrainPanel(wsUrl: string): void {
       if (o === "set-fen") {
         const fen = el("input", { placeholder: "FEN", size: "28" }) as HTMLInputElement;
         opts.append(fen);
-        button(opts, OPTION_LABEL[o]!, () => send({ cmd: "resolve", action: o, fen: fen.value.trim() }));
+        button(opts, OPTION_LABEL[o]!, () => send({ cmd: "resolve", action: "set-fen", fen: fen.value.trim() }));
       } else if (o === "choose-move") {
-        for (const c of a.candidates ?? []) button(opts, `${OPTION_LABEL[o]}: ${c.san}`, () => send({ cmd: "resolve", action: o, uci: c.uci }));
+        for (const c of a.candidates ?? []) button(opts, `${OPTION_LABEL[o]}: ${c.san}`, () => send({ cmd: "resolve", action: "choose-move", uci: c.uci }));
       } else {
-        button(opts, OPTION_LABEL[o] ?? o, () => send({ cmd: "resolve", action: o }));
+        button(opts, OPTION_LABEL[o] ?? o, () => send({ cmd: "resolve", action: o as "retry" | "accept-prediction" }));
       }
     }
   };
@@ -93,7 +96,7 @@ export function mountBrainPanel(wsUrl: string): void {
   const onMessage = (msg: any) => {
     if (msg.type === "brainStatus") {
       const s = msg.status ?? {};
-      status.textContent = `${s.running ? s.state : "stopped"} | brain ${s.brain || "-"} | eyes ${s.observer} | ${s.moves?.length ?? 0} moves`;
+      status.textContent = `${s.running ? s.state : "stopped"} | brain ${s.brain || "-"} | camera ${s.observer} | ${s.moves?.length ?? 0} moves`;
       showAsk(s.state === "halted" ? (s.question as Ask) : null);
       return;
     }
@@ -132,21 +135,6 @@ export function mountBrainPanel(wsUrl: string): void {
     }
   };
 
-  let retry = 0;
-  const open = () => {
-    sock = new WebSocket(wsUrl);
-    sock.onopen = () => {
-      retry = 0;
-      send({ cmd: "status" });
-    };
-    sock.onmessage = (ev) => {
-      try {
-        onMessage(JSON.parse(ev.data));
-      } catch {
-        /* ignore */
-      }
-    };
-    sock.onclose = () => setTimeout(open, Math.min(500 * 2 ** retry++, 5000));
-  };
-  open();
+  // The server sends the loop status on connect and after every change.
+  serverMessageListeners.add(onMessage);
 }

@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-/** Commands for the robot's brain loop (apps/server/src/brain-session.ts). */
+/** Commands for the chess loop (the brain's GameLoop, apps/server/src/chess.ts). */
 export const brainCommandSchema = z.object({
   type: z.literal("brain"),
-  cmd: z.enum(["start", "stop", "resolve", "simHuman", "simFault", "status"]),
+  cmd: z.enum(["start", "stop", "resume", "resolve", "simHuman", "simFault", "status"]),
   /** start: initial FEN (default: standard start). resolve/set-fen: the true position. */
   fen: z.string().optional(),
   robotColor: z.enum(["w", "b"]).optional(),

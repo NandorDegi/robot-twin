@@ -1,0 +1,25 @@
+[Unit]
+Description=robot-twin brain: intuition network (searchless_chess 9M, JAX on CPU)
+After=network-online.target
+
+[Service]
+Type=simple
+User=robot-twin
+Group=robot-twin
+Environment=SEARCHLESS_ROOT=@PREFIX@/searchless
+Environment=SEARCHLESS_MODEL=9M
+Environment=INTUITION_HOST=127.0.0.1
+Environment=INTUITION_PORT=8095
+# Leave cores for vision and the controller: XLA uses all cores by default.
+CPUQuota=300%
+Nice=10
+ExecStart=@PREFIX@/intuition-venv/bin/python -I @APP@/apps/intuition/intuition_server.py serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

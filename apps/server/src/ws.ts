@@ -3,10 +3,12 @@ import { clientMessageSchema } from "@robot/protocol";
 import type { ClientMessage, ServerMessage } from "@robot/protocol";
 import type { RobotController } from "./controller";
 import { TrajectoryRecorder, replay } from "./record";
-import { ChessSession } from "./chess";
+import { ChessSession, loopMessages } from "./chess";
 import type { CalibrationService } from "./calib/service";
 import { sameOrigin } from "./calib/origin";
-import { BrainSession } from "./brain-session";
+
+/** Client messages that move the arm. Refused while the chess loop runs. */
+const MANUAL_MOTION = new Set<ClientMessage["type"]>(["setTarget", "setJointState", "gripper", "home", "replay"]);
 
 /**
  * WebSocket bridge between the browser twin and the RobotController.
@@ -25,13 +27,11 @@ export function startWebsocket(controller: RobotController, port: number, opts: 
   const wss = new WebSocketServer({ port, host, maxPayload: 256 * 1024, verifyClient: (info: { req: { headers: import("node:http").IncomingHttpHeaders } }) => sameOrigin(info.req.headers) });
   const recorder = new TrajectoryRecorder();
   const chess = opts.chess ?? new ChessSession(controller);
-  const brain = new BrainSession(controller, (msg) => broadcast(msg));
 
   wss.on("connection", (ws: WebSocket) => {
     send(ws, robotInfo(controller));
     send(ws, stateMessage(controller));
-    send(ws, chessMessage(chess));
-    send(ws, loopMessage(chess));
+    for (const m of loopMessages(chess)) send(ws, m);
     if (opts.calib) {
       send(ws, opts.calib.statusMessage());
       send(ws, opts.calib.robotMessage());
@@ -70,7 +70,14 @@ export function startWebsocket(controller: RobotController, port: number, opts: 
         return;
       }
       if (msg.type === "brain") {
-        brain.handle(msg).catch((err) => send(ws, { type: "error", message: `brain: ${(err as Error).message}` }));
+        void chess.handle(msg).then((r) => {
+          if (!r.ok) send(ws, { type: "error", message: `chess loop: ${r.error ?? "failed"}` });
+        });
+        return;
+      }
+      // Single commander: while the loop drives the arm, nothing else does.
+      if (MANUAL_MOTION.has(msg.type) && chess.isBusy) {
+        send(ws, { type: "error", message: "the chess loop is running: stop it before moving the arm by hand" });
         return;
       }
       void handle(controller, ws, msg, recorder, chess);
@@ -85,9 +92,9 @@ export function startWebsocket(controller: RobotController, port: number, opts: 
   };
   controller.subscribe(() => broadcast(stateMessage(controller)));
   chess.subscribe(() => {
-    broadcast(chessMessage(chess));
-    broadcast(loopMessage(chess));
+    for (const m of loopMessages(chess)) broadcast(m);
   });
+  chess.onLoopEvent((event) => broadcast({ type: "brain", event }));
   opts.calib?.subscribe(() => {
     broadcast(opts.calib!.statusMessage());
     broadcast(opts.calib!.robotMessage());
@@ -160,25 +167,6 @@ async function handle(
       if (!res.ok) send(ws, { type: "error", message: res.error ?? "invalid move" });
       break;
     }
-    case "setOpponent":
-      chess.setOpponent(msg.enabled, msg.elo);
-      break;
-    case "resetGame":
-      chess.reset();
-      break;
-    case "syncBoard": {
-      const res = await chess.syncBoard();
-      if (!res.ok) send(ws, { type: "error", message: res.error ?? "sync failed" });
-      break;
-    }
-    case "robotMove": {
-      const res = await chess.robotTurn();
-      if (!res.ok) send(ws, { type: "error", message: res.error ?? "robot move failed" });
-      break;
-    }
-    case "clearFault":
-      chess.clearFault();
-      break;
   }
 }
 
@@ -190,23 +178,6 @@ function stateMessage(controller: RobotController): ServerMessage {
     enabled: controller.isEnabled,
     mode: controller.mode_,
   };
-}
-
-function chessMessage(chess: ChessSession): ServerMessage {
-  return {
-    type: "chess",
-    fen: chess.fen,
-    turn: chess.turn,
-    lastSan: chess.moveHistoryLast,
-    check: chess.inCheck,
-    opponentEnabled: chess.opponentEnabled,
-    elo: chess.eloLevel,
-  };
-}
-
-function loopMessage(chess: ChessSession): ServerMessage {
-  const st = chess.loopStatus;
-  return { type: "loop", ...st, decider: chess.deciderName };
 }
 
 function robotInfo(controller: RobotController): ServerMessage {

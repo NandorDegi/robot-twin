@@ -63,10 +63,20 @@ fi
 # Config sanity
 [ "${FRANKA_DRY_RUN:-1}" = 1 ] && info "FRANKA_DRY_RUN=1: the bridge does NOT connect to the robot" || info "FRANKA_DRY_RUN=0: the bridge connects to the REAL robot"
 awk -v s="${FRANKA_SPEED_FACTOR:-1}" 'BEGIN{exit !(s <= 0.2)}' && pass "FRANKA_SPEED_FACTOR=${FRANKA_SPEED_FACTOR:-}" || info "FRANKA_SPEED_FACTOR=${FRANKA_SPEED_FACTOR:-} (> 0.2: not for a first run)"
-for p in 3001 3002 8081; do
+for p in 3001 3002 8081 8090 8095; do
   if ss -ltnH "sport = :$p" 2>/dev/null | grep -qv '127.0.0.1'; then fail "port $p listens on a non-loopback address"; fi
 done
-pass "ports 3001/3002/8081 loopback-only (when running)"
+pass "ports 3001/3002/8081/8090/8095 loopback-only (when running)"
+
+# The brain (decision maker of the chess loop; there is no engine fallback)
+for u in robot-intuition:8095 robot-reflection:8090; do
+  unit="${u%%:*}"; port="${u#*:}"
+  if [ ! -f "/etc/systemd/system/$unit.service" ]; then fail "$unit not installed (deploy/brain/install-brain.sh)"
+  elif ! systemctl is-active --quiet "$unit"; then info "$unit installed, not running (start it before the chess loop)"
+  elif curl -fsS -m 3 "http://127.0.0.1:$port/health" >/dev/null 2>&1; then pass "$unit healthy (127.0.0.1:$port)"
+  else fail "$unit running but not healthy on 127.0.0.1:$port (journalctl -u $unit)"; fi
+done
+[ "${BRAIN_OBSERVER:-vision}" = sim ] && [ "${FRANKA_DRY_RUN:-1}" = 0 ] && fail "BRAIN_OBSERVER=sim with the real robot: no camera check"
 
 echo "---"
 [ "$fails" -eq 0 ] && echo "preflight: all checks passed" || echo "preflight: $fails check(s) FAILED"

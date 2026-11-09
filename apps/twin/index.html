@@ -90,17 +90,7 @@
             <button id="btnSpeak">🎤</button>
             <button id="btnPlay" class="primary">Play</button>
           </div>
-          <div class="buttons">
-            <button id="btnReset">New game</button>
-            <button id="btnSync" title="Read the board with the camera, apply your move, then the robot answers">Sync from camera</button>
-            <button id="btnRobotMove" title="The decider chooses a move and the robot plays it">Robot move</button>
-            <button id="btnClearFault" title="You fixed the board; leave the fault state">Clear fault</button>
-          </div>
-          <div class="row">
-            <label>Twin Elo</label>
-            <input id="eloRange" type="range" min="400" max="2200" step="100" value="1200" />
-            <span id="eloVal" class="val">1200</span>
-          </div>
+          <p class="hint">The game loop runs on the server: Start, Stop and the robot's questions are in the Robot brain panel. With the simulated board, a typed or spoken move is played by the simulated hand; with a camera, play your move on the board.</p>
         </div>
       </div>
 

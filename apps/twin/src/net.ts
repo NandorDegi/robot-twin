@@ -94,8 +94,7 @@ function applyServerMessage(msg: any, onTargetResult?: (ok: boolean, error: numb
         turn: typeof msg.turn === "string" ? msg.turn : s.turn,
         lastSan: typeof msg.lastSan === "string" ? msg.lastSan : s.lastSan,
         check: Boolean(msg.check),
-        opponentEnabled: Boolean(msg.opponentEnabled),
-        elo: Number(msg.elo ?? s.elo),
+        loopRunning: Boolean(msg.running),
         lastError: "",
       });
       break;

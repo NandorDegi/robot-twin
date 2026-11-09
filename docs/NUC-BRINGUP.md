@@ -23,6 +23,8 @@ Browser (twin UI) --https/ws--> Caddy :5909 (LAN, IP allowlist)
                                   `-- /vision/* -> robot-vision :8081 (Python, 127.0.0.1)
 
 robot-server: controller (IK, limits, collision and floor check), chess loop
+      |  (the brain decides: robot-intuition :8095 + robot-reflection :8090,
+      |   both 127.0.0.1, CPU only)
       |  HTTP 127.0.0.1:3002, one lease + heartbeat
       v
 robot-franka: Franka bridge (panda-py 1.1.1 = libfranka 0.9.2), the ONLY
@@ -43,37 +45,51 @@ bridge stops the arm). `robot-ros.service` (optional ROS 2) conflicts with
 
 ### The closed loop the system supports
 
+There is one game loop: the brain's `GameLoop` (`packages/brain`), wired to the
+controller and the camera in `apps/server/src/chess.ts`. Details of the brain,
+the self-check and the log: [`docs/BRAIN.md`](BRAIN.md).
+
 ```
-camera --> board state --> decision --> pick/place --> camera verifies
-  ^        (occupancy        (pluggable    (validated       |
-  |         per square,       decider)      motions)        |
-  |         -> FEN from the                                 |
-  |         tracked game)                                   |
-  `------------- mismatch: STOP, name the squares <---------'
+camera --> pre-check --> decision --> predict --> pick/place --> camera verifies
+  ^        (board ==      (brain:       (forward    (validated        |
+  |         belief?)       intuition +   model)      motions)         |
+  |                        reflection)                                |
+  `---- mismatch: STOP, disable the robot, name the squares, ask <---'
 ```
 
-1. **Observe.** The arm moves to the observe pose (out of the camera view).
-   `GET /vision/board` gives, per square, empty / white / black. The server
-   compares it with the tracked game (FEN). If the human made one legal move,
-   the server finds it (also castling and en passant) and applies it.
-2. **Decide.** A `MoveDecider` proposes the robot's move. Default: the local
-   chess engine. Plug-in: set `CHESS_DECIDER_URL` to any HTTP service (an LLM
-   agent, a learned policy, a UCI engine wrapper) that answers
-   `POST {"fen", "legal": [uci...], "side"}` with `{"uci": "e7e5"}` (or
-   `{"san": ...}`). The answer is data: only a legal move is accepted, and the
-   decider never commands the arm. Interface: `apps/server/src/decider.ts`.
-   The learning part is not implemented.
-3. **Act.** For each pick and place: approach 100 mm above, descend with the
+1. **Start.** The loop is stopped when the server starts. A person presses
+   **Start** in the twin's Robot brain panel. Start is refused without a valid
+   calibration (section 10) and, on the real robot, without a camera.
+2. **Observe.** Before every look the arm goes to the observe pose (out of the
+   camera view). `GET /vision/board` gives, per square, empty / white / black
+   and a confidence. On the human's turn the loop waits for two identical
+   looks (hand out of view), then finds the one legal move that explains the
+   change (also castling and en passant). An illegal or unclear change stops
+   the loop and asks.
+3. **Pre-check.** Before the robot's move the board must equal the position
+   the robot believes in. If not, the arm does not touch the board.
+4. **Decide.** The brain chooses the move: **intuition**, a searchless policy
+   network (DeepMind searchless_chess 9M, `robot-intuition`), proposes the top
+   candidates; **reflection**, a small LM (Qwen3-1.7B on llama.cpp,
+   `robot-reflection`), chooses one with a short reason. If the reflection
+   fails, the top candidate is played. There is no chess engine and no search.
+   The answer is data: only a legal move is accepted, and the brain never
+   commands the arm.
+5. **Act.** For each pick and place: approach 100 mm above, descend with the
    hand pointing down, grasp or release, lift. Captures go to the tray.
    Every motion is checked (limits, self-collision, floor, the straight
-   joint path) by the server and again by the bridge.
-4. **Verify.** Back in the observe pose, the camera board must equal the
-   expected position. If it does not, the loop stops in **fault**, the robot
-   is disabled, and the twin shows the squares that differ. Nothing continues
-   until you fix the board and press **Clear fault**.
+   joint path) by the server and again by the bridge. A failed motion or
+   grasp stops the loop.
+6. **Verify.** Back in the observe pose, the camera must show the predicted
+   board (up to 3 looks, for a short occlusion). If it does not, the loop
+   **halts**, the robot is **disabled**, and the twin shows the squares that
+   differ and the likely reasons (for example "piece missing on e5: dropped or
+   not released?"). Nothing moves until you answer in the panel and press
+   **Enable**.
 
-The same check runs **before** each robot move: the arm does not touch a
-board that does not match the game.
+Every cycle is one line in the JSONL log (`BRAIN_LOG`,
+`/var/lib/robot-twin/brain/brain.jsonl`): prediction, observation, differences,
+decision and reasons. It is the dataset for later learning.
 
 ---
 
@@ -91,6 +107,8 @@ board that does not match the game.
 | Camera index | `v4l2-ctl --list-devices` | `VISION_CAMERA_INDEX`. |
 | Board position | measured in step 10 (Calibrate wizard) | saved in `VISION_CALIBRATION_FILE`. |
 | Observe pose | step 12 | `CHESS_OBSERVE_POSE`, a pose that does not hide the board. |
+| Brain downloads | internet on the NUC during section 4.1 | about 1.2 GB (searchless 9M checkpoint, Qwen3-1.7B GGUF, llama.cpp source). |
+| Brain CPU cost | section 4.1, the install bench | `p50_ms` of the intuition per move; the reflection takes about 5-10 s per move on 4 cores (estimate). |
 | Ubuntu Pro token | ubuntu.com/pro (free personal tier) | For the real-time kernel. It is a secret: type it only into `pro attach`, never into a file. |
 
 All configuration is in `/etc/robot-twin/robot-twin.env` (template:
@@ -190,6 +208,36 @@ sudo nano /etc/robot-twin/caddy.env           # TWIN_ALLOWED_CIDRS = your operat
 ```
 
 Keep `FRANKA_DRY_RUN=1` for now.
+
+### 4.1 Install the brain
+
+The brain is the decision maker of the chess loop. There is no engine to fall
+back to: without the brain the loop halts at the robot's first move with
+"brain ... failed".
+
+```bash
+sudo bash /opt/robot-twin/app/deploy/brain/install-brain.sh
+sudo systemctl start robot-intuition robot-reflection
+curl -s 127.0.0.1:8095/health     # {"status": "ok", "model": "searchless-9M"}
+curl -s 127.0.0.1:8090/health     # {"status": "ok"}
+```
+
+Expected: four `[brain] n/4` steps, one intuition `bench` line (note its
+`p50_ms`: the time per move), `Done. Nothing was started.` It downloads about
+1.2 GB and builds llama.cpp (10-20 min). It is safe to run again.
+
+| Failure | Action |
+|---|---|
+| `run deploy/install.sh first` | Do section 4 first. |
+| `9M checkpoint checksum mismatch` | Download changed or broken. Delete `/opt/robot-twin/brain/searchless/searchless_chess/checkpoints/9M.zip`, retry. |
+| `the intuition bench failed` | Read the Python error. JAX needs an x86_64 CPU with AVX. |
+| llama.cpp does not build | Read the cmake error. `LLAMA_CPP_REF=<tag>` pins another release. |
+| `8090/health` says loading | The model loads for 10-30 s after the start. Retry. |
+
+Options: `WITH_MAIA=1` adds Maia (human-like policy) run by lc0 with
+`go nodes 1` (one network evaluation, no search); `WITH_136M=1` adds the
+larger searchless network (5-10 s per move). Configuration:
+`BRAIN_*`, `INTUITION_*`, `REFLECTION_*` in `/etc/robot-twin/robot-twin.env`.
 
 ---
 
@@ -297,10 +345,10 @@ sudo -u robot-twin $L/communication_test $FRANKA_HOST
 validation and timing. The real robot is not contacted.
 
 ```bash
-sudo systemctl start robot-franka robot-vision robot-server caddy
-systemctl status robot-franka robot-vision robot-server caddy --no-pager
+sudo systemctl start robot-intuition robot-reflection robot-franka robot-vision robot-server caddy
+systemctl status robot-intuition robot-reflection robot-franka robot-vision robot-server caddy --no-pager
 journalctl -u robot-franka -n 5    # backend=dry-run dry_run=True ... listening on http://127.0.0.1:3002
-journalctl -u robot-server -n 5    # using FrankaAdapter ... listening on ws://127.0.0.1:3001
+journalctl -u robot-server -n 5    # using FrankaAdapter ... chess loop: brain ... stopped until Start ... listening on ws://127.0.0.1:3001
 ```
 
 Open `http://<nuc-lan-ip>:5909` from a computer in `TWIN_ALLOWED_CIDRS`.
@@ -311,11 +359,18 @@ Check, in this order:
 2. Press **Home**: refused ("disabled").
 3. Press **Enable**, then **Home**: the arm goes to the ready pose.
 4. Move one joint slider and release it: one motion.
-5. Type `e4`, **Play**: approach, descend, close, lift, move, place, observe
-   pose. The loop line says `e4 done` (or "refused: no valid calibration" /
-   a vision fault if the camera is not calibrated yet: then set
-   `CHESS_REQUIRE_CALIBRATION=0` and `CHESS_REQUIRE_VISION=0` only for this
-   dry-run).
+5. One brain move on the simulated board. For this dry-run only, set
+   `BRAIN_OBSERVER=sim`, `CHESS_REQUIRE_VISION=0` and
+   `CHESS_REQUIRE_CALIBRATION=0`, restart `robot-server`, Enable. In the Robot
+   brain panel press **Start (robot = White)**: the panel shows the decision
+   ("I play e4 (reflective:http+slm, ... ms)" with the reason and the intuition candidates),
+   then approach, descend, close, lift, move, place, observe pose, and
+   "verified e4". Type `e5`, **Play** (the simulated hand plays it): the robot
+   answers. Press **Fault: drop** and play a move: the robot stops, says which
+   squares differ and why, and is disabled. Answer "The board is right,
+   continue", Enable. Press **Stop**. Then set the three values back
+   (`BRAIN_OBSERVER=vision`, `CHESS_REQUIRE_VISION=1`, calibration required)
+   and restart `robot-server`.
 6. Press **E-Stop** during a motion: the motion stops, the robot is disabled.
 7. Close the browser tab during a motion: the server log says
    `last client disconnected: stopping and disabling the robot`.
@@ -525,18 +580,30 @@ If the camera, the light or the board moves later, repeat the affected steps
    it: enable, Home, then set the joint-1 slider to +90 deg and look at
    `/vision/board?debug`. Put the 7 joint values (radians) into
    `CHESS_OBSERVE_POSE` if you need another pose. Restart `robot-server`.
-2. `CHESS_REQUIRE_VISION=1` (default for a real robot).
-3. Start position on the board. **New game** in the twin.
-4. You play white: move a white piece by hand, e.g. e2-e4.
-5. Press **Sync from camera**. Expected loop lines:
-   `human played e4` -> `asking engine` -> `checking the board before the move`
-   -> `playing e5` -> `checking e5 with the camera` -> `e5 done and verified`.
-6. Test the mismatch stop once: during the robot's move, take a piece away
-   from the board. Expected: `fault: after ... the board does not match`,
-   the mismatch squares listed, the robot disabled. Put the board in the
-   position the twin shows (FEN), **Clear fault**, **Enable**.
+2. `BRAIN_OBSERVER=vision`, `CHESS_REQUIRE_VISION=1` (defaults for a real
+   robot), the brain healthy (section 4.1), the calibration valid (section 10).
+3. Start position on the board, arm enabled. In the Robot brain panel press
+   **Start (robot = Black)**. The loop line says `awaiting-human`.
+4. You play white: move a white piece by hand, e.g. e2-e4, and take your hand
+   out of the camera view. Expected panel and loop lines: `you played e4` ->
+   `robot-turn` (pre-check) -> `I play e5 (reflective:http+slm, ... ms)` with the reason ->
+   `acting` -> `verifying` -> `verified e5` -> `awaiting-human`. While it is
+   the robot's turn, keep your hands out of the camera view.
+5. Test the mismatch stop once: during the robot's move, take the piece away
+   that it carries or puts down. Expected: `I stopped (mismatch)`, the
+   squares that differ with the likely reasons, the robot disabled. Fix the
+   board, press **I fixed the board, look again**, then **Enable**. The other
+   answers: **The board is right, continue** (the camera was wrong) and
+   **Set the true position (FEN)**.
+6. Look at the log: `sudo tail -n 3 /var/lib/robot-twin/brain/brain.jsonl`.
+   One line per cycle, `verdict` `human-move`, `ok`, `mismatch`, `resolved`.
 
-Promotion: the robot places the pawn; the twin asks you to swap it for the
+When the robot halts, manual motion (sliders, Home, gripper) is allowed again
+for the person who fixes the board. While the loop runs, the server refuses
+manual motion: the loop is the only commander of the arm. **Stop** ends the
+game; **Resume** continues after a pause (for example after a recalibration).
+
+Promotion: the robot places the pawn; the loop line asks you to swap it for the
 new piece (colour-only vision cannot see the piece type).
 
 ---
@@ -562,11 +629,14 @@ install libfranka 0.9.2 system-wide, and build the workspace. Never run
 
 | Task | Command |
 |---|---|
-| Start / stop | `sudo systemctl start|stop robot-franka robot-vision robot-server caddy` |
+| Start / stop | `sudo systemctl start|stop robot-intuition robot-reflection robot-franka robot-vision robot-server caddy` |
 | Logs | `journalctl -u robot-franka -u robot-server -f` |
 | Bridge state | `curl -s 127.0.0.1:3002/state` |
 | Software stop | `curl -s -X POST 127.0.0.1:3002/stop` |
 | Recover after reflex | `sudo bash /opt/robot-twin/app/deploy/franka-recover.sh` |
 | Preflight | `sudo bash /opt/robot-twin/app/deploy/preflight.sh` |
 | Board state | `curl -s '127.0.0.1:8081/board?debug'` |
+| Brain health | `curl -s 127.0.0.1:8095/health; curl -s 127.0.0.1:8090/health` |
+| Brain logs | `journalctl -u robot-intuition -u robot-reflection -f` |
+| Loop log (JSONL) | `sudo tail -f /var/lib/robot-twin/brain/brain.jsonl` |
 | Calibration status | `curl -s 127.0.0.1:8081/calib/status` (wizard: twin -> Calibrate) |

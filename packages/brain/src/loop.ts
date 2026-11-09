@@ -195,7 +195,12 @@ export class GameLoop {
 
     // 1. Observe: is the board what I believe it is?
     if (this.o.preCheck ?? true) {
-      const obs0 = await this.o.observer.observe();
+      let obs0: Observation;
+      try {
+        obs0 = await this.o.observer.observe();
+      } catch (err) {
+        return this.cameraFailed(base, err, "before my move");
+      }
       const d0 = diffBoard(expectedBoard(this.pos), obs0, this.diffOpts());
       if (!d0.match) {
         const hints = explainDiff(d0);
@@ -247,7 +252,14 @@ export class GameLoop {
 
     // 5. Observe again and 6. compare.
     this.setState("verifying");
-    const { obs, diff } = await this.verify(predicted);
+    let checked: { obs: Observation; diff: BoardDiff };
+    try {
+      checked = await this.verify(predicted);
+    } catch (err) {
+      this.pending = { kind: "robot", move, predicted };
+      return this.cameraFailed({ ...base, decision: decRec, plan, predicted: encodeExpected(expectedBoard(predicted)) }, err, `after my move ${decision.san}`, true);
+    }
+    const { obs, diff } = checked;
     const rec: CycleRecord = {
       ...base,
       decision: decRec,
@@ -292,7 +304,13 @@ export class GameLoop {
   /** Look once. Accepts a move only after `stableFrames` identical observations. */
   async humanTurn(): Promise<CycleRecord | null> {
     if (this.stateV !== "awaiting-human") throw new Error(`not the human's turn (state ${this.stateV})`);
-    const obs = await this.o.observer.observe();
+    let obs: Observation;
+    try {
+      obs = await this.o.observer.observe();
+    } catch (err) {
+      this.pending = { kind: "human" };
+      return this.cameraFailed(this.record("human", this.fen), err, "while I waited for your move");
+    }
     const prev = this.lastObs;
     this.lastObs = obs;
     this.stableCount = prev && changedSquares(prev, obs).length === 0 ? this.stableCount + 1 : 1;
@@ -349,7 +367,13 @@ export class GameLoop {
         if (pending?.kind === "robot") {
           // The human says the board is fixed: verify against the prediction again.
           this.setState("verifying");
-          const { obs, diff } = await this.verify(pending.predicted);
+          let checked: { obs: Observation; diff: BoardDiff };
+          try {
+            checked = await this.verify(pending.predicted);
+          } catch (err) {
+            return this.cameraFailed(rec, err, "when I looked again", true);
+          }
+          const { obs, diff } = checked;
           rec.observed = this.enc(obs);
           rec.diff = diff.diffs;
           if (!diff.match) {
@@ -407,6 +431,15 @@ export class GameLoop {
     this.emit({ type: "ask-human", ask: this.lastAsk });
     await this.writeLog(rec);
     return rec;
+  }
+
+  /** The camera (or the arm parking for it) failed: never guess, stop and ask. */
+  private async cameraFailed(base: CycleRecord, err: unknown, when: string, robotPending = false): Promise<CycleRecord> {
+    const message = (err as Error).message ?? String(err);
+    this.remember(`camera failed ${when}: ${message}`);
+    const hints = [`I could not look at the board ${when}: ${message}. Check the camera, the calibration and the arm, then let me look again.`];
+    const options: ResolveAction["action"][] = robotPending ? ["retry", "accept-prediction", "set-fen"] : ["retry", "set-fen"];
+    return this.halt({ ...base, verdict: "error", error: message, hints }, options);
   }
 
   private async fail(base: CycleRecord, err: unknown): Promise<CycleRecord> {

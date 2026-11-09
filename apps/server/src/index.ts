@@ -4,8 +4,6 @@ import type { RobotAdapter } from "@robot/hardware";
 import { RobotController } from "./controller";
 import { startWebsocket } from "./ws";
 import { ChessSession } from "./chess";
-import { EngineDecider, deciderFromEnv } from "./decider";
-import { VisionObserver } from "./observer";
 import { CalibrationService } from "./calib/service";
 import { CalibrationStore, defaultCalibrationFile } from "./calib/store";
 
@@ -62,10 +60,10 @@ calib.reload();
   console.log(`[robot] calibration ${st.file}: ${st.valid ? `r${st.calibration?.revision} valid` : st.reasons.join("; ")}`);
 }
 
+// The one chess loop: the brain decides, the controller acts, the camera checks.
 const chess = new ChessSession(controller, {
   calibrationGate: () => calib.gate(),
-  decider: deciderFromEnv(new EngineDecider(Number(process.env.CHESS_ELO ?? 1200))),
-  observer: visionUrl ? new VisionObserver(visionUrl) : null,
+  visionUrl,
   requireVision: process.env.CHESS_REQUIRE_VISION ? process.env.CHESS_REQUIRE_VISION === "1" : adapter.isReal,
   observePose: parsePose(process.env.CHESS_OBSERVE_POSE),
   settleMs: Number(process.env.CHESS_SETTLE_MS ?? 500),
@@ -78,7 +76,7 @@ async function main(): Promise<void> {
   // person enables it in the twin after checking the robot and its stop.
   if (!adapter.isReal) controller.setEnabled(true);
   startWebsocket(controller, PORT, { host: HOST, chess, calib });
-  console.log(`[robot] decider: ${chess.deciderName}; vision: ${visionUrl || "none"}`);
+  console.log(`[robot] chess loop: brain (${process.env.BRAIN_INTUITION ?? "searchless"} + reflection ${process.env.BRAIN_REFLECTION ?? "local"}); camera ${chess.observerKind}; vision ${visionUrl || "none"}; stopped until Start`);
 }
 
 const shutdown = async () => {

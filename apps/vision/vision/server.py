@@ -4,7 +4,7 @@ Endpoints:
   GET  /health      {"status": "ok"}
   GET  /stream      MJPEG feed for the twin
   GET  /detect      clickable piece overlay for the twin (heuristic or YOLO)
-  GET  /board       chess-loop board state: per square "w" | "b" | null
+  GET  /board       chess-loop board state: per square "w" | "b" | null, and a confidence
   POST /calibrate   fit the homography from the 4 ArUco corner markers
   GET  /observe     per-square colour/type/confidence (YOLO or heuristic), vision/observe.py
   GET  /frame.jpg   one still frame (dataset capture, vision/training)
@@ -144,8 +144,9 @@ class Handler(BaseHTTPRequestHandler):
         if frame is None:
             self._send_json({"ok": False, "error": "no camera frame"})
             return
-        st = _board.board_state(frame, _reference)
-        out = {"ok": True, "squares": st["squares"], "time": time.time()}
+        st = _board.board_state(frame, _reference, details=True)
+        conf = {k: v["confidence"] for k, v in st["details"].items()}
+        out = {"ok": True, "squares": st["squares"], "confidence": conf, "time": time.time()}
         if debug:
             out["scores"] = st["scores"]
         self._send_json(out)

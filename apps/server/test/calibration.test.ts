@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { defaultChain } from "@robot/robot-config";
 import { SimulatedAdapter } from "@robot/hardware";
 import { CALIBRATION_SCHEMA } from "@robot/protocol";
-import { currentBoardPose, initialPosition, occupancyOf, setBoardPose, squareCentre } from "@robot/chess";
+import { currentBoardPose, initialPosition, setBoardPose, squareCentre } from "@robot/chess";
+import { observationFromPosition, type Observer } from "@robot/brain";
 import { RobotController } from "../src/controller";
 import { ChessSession } from "../src/chess";
 import { CalibrationService } from "../src/calib/service";
 import { CalibrationStore, defaultCalibrationFile } from "../src/calib/store";
 import { sameOrigin } from "../src/calib/origin";
-import type { BoardObserver } from "../src/observer";
 
 const original = currentBoardPose();
 afterEach(() => setBoardPose(original));
@@ -94,10 +94,9 @@ async function simController() {
   return controller;
 }
 
-const startCamera: BoardObserver = {
-  name: "fake",
+const startCamera: Observer = {
   async observe() {
-    return { ok: true, occupancy: occupancyOf(initialPosition()) };
+    return observationFromPosition(initialPosition(), { knownTypes: false });
   },
 };
 
@@ -109,33 +108,33 @@ describe("the chess loop refuses without a valid calibration", () => {
     calib.reload();
     const chess = new ChessSession(controller, {
       observer: startCamera,
-      requireVision: false,
+      observerKind: "vision",
       settleMs: 0,
+      pollMs: 5,
       calibrationGate: () => calib.gate(),
+      env: { BRAIN_INTUITION: "uniform", BRAIN_REFLECTION: "off", BRAIN_LOG: join(dir, "brain.jsonl") },
     });
-    chess.setOpponent(false);
     const q0 = controller.state;
-    const r = await chess.playSan("e4");
+    const r = await chess.start();
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/no valid calibration: no calibration file yet/);
     expect(chess.loopStatus.message).toMatch(/refused: no valid calibration/);
-    expect(chess.turn).toBe("w");
+    expect(chess.running).toBe(false);
     expect(controller.state).toEqual(q0);
-    expect((await chess.syncBoard()).ok).toBe(false);
-    expect((await chess.robotTurn()).ok).toBe(false);
     expect(calib.statusMessage()).toMatchObject({ type: "calibStatus", required: true, valid: false });
 
     // Saved but not validated: still refused.
     writeFileSync(f, JSON.stringify(calibrationDoc({ validation: undefined })));
     calib.reload();
-    expect((await chess.playSan("e4")).error).toMatch(/not validated/);
+    expect((await chess.start()).error).toMatch(/not validated/);
 
-    // Valid: the gate opens (the move then fails on the fake camera, not on the gate).
+    // Valid: the gate opens and the loop runs.
     writeFileSync(f, JSON.stringify(calibrationDoc()));
     calib.reload();
     expect(calib.gate().ok).toBe(true);
-    const r2 = await chess.playSan("e4");
-    expect(r2.error ?? "").not.toMatch(/calibration/);
+    expect(await chess.start()).toEqual({ ok: true });
+    expect(chess.running).toBe(true);
+    await chess.stop();
     await controller.stop();
   }, 60000);
 

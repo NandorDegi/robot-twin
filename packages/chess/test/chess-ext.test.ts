@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { initialPosition, parseFen, legalMoves } from "../src/engine";
 import { parseSan, moveToSan } from "../src/san";
-import { chooseMove } from "../src/bot";
 import { squareToTarget, trayTarget, BOARD } from "../src/board";
 
 describe("SAN", () => {
@@ -40,17 +39,6 @@ describe("SAN", () => {
     expect(san.length).toBe(2);
     expect(san).toContain("Nbd4");
     expect(san).toContain("Nfd4");
-  });
-});
-
-describe("bot", () => {
-  it("returns a legal move at every elo", () => {
-    for (const elo of [400, 1200, 2200]) {
-      const pos = initialPosition();
-      const m = chooseMove(pos, elo);
-      expect(m).toBeTruthy();
-      expect(parseSan(pos, moveToSan(pos, m!))).toBeTruthy();
-    }
   });
 });
 

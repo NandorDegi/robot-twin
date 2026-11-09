@@ -120,6 +120,34 @@ describe("closed loop", () => {
     expect(r!.verdict).toBe("ok");
   });
 
+  it("a camera failure after the move halts with the reason; retry verifies again", async () => {
+    const { world, loop, human } = setup(scripted(["e7e5"]));
+    await human("e2e4");
+    let broken = false;
+    const real = (loop as unknown as { o: GameLoopOptions }).o.observer;
+    (loop as unknown as { o: GameLoopOptions }).o.observer = {
+      observe: async () => {
+        if (broken) throw new Error("vision service unreachable");
+        return real.observe();
+      },
+    };
+    const orig = world.step.bind(world);
+    world.step = (s) => {
+      orig(s);
+      broken = true; // the camera dies while the arm moves
+    };
+    const r = await loop.step();
+    expect(r).toMatchObject({ verdict: "error", error: "vision service unreachable", decision: { uci: "e7e5" } });
+    expect(r!.hints!.join(" ")).toMatch(/could not look at the board after my move e5/);
+    expect(loop.state).toBe("halted");
+    expect(loop.question!.options).toEqual(["retry", "accept-prediction", "set-fen"]);
+    broken = false;
+    world.step = orig;
+    expect((await loop.resolve({ action: "retry" })).verdict).toBe("resolved");
+    expect(loop.moves).toEqual(["e2e4", "e7e5"]);
+    expect(loop.state).toBe("awaiting-human");
+  });
+
   it("refuses to move when the board is not what it expects (pre-check)", async () => {
     const { world, loop, human } = setup(scripted(["e7e5"]));
     await human("e2e4");

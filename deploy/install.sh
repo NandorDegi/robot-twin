@@ -11,6 +11,8 @@
 #     twin build, Python venvs for the Franka bridge (panda-py) and vision
 #   - systemd units robot-franka, robot-server, robot-vision, Caddy
 #   - /etc/robot-twin/robot-twin.env from the template (never overwritten)
+# The brain (the chess loop's decision maker: intuition network + reflection
+# SLM) is a second step with large downloads: deploy/brain/install-brain.sh.
 # It does NOT install the real-time kernel (needs your Ubuntu Pro token, see
 # docs/NUC-BRINGUP.md), does NOT configure the FCI NIC (run
 # deploy/setup-fci-network.sh), does NOT start a service, and never contacts
@@ -108,7 +110,7 @@ if [ ! -f "$ENV_FILE" ]; then
 else
   log "    kept existing $ENV_FILE"
 fi
-install -d -m 0750 -o "$RUN_USER" -g "$RUN_USER" "$STATE" "$STATE/vision"
+install -d -m 0750 -o "$RUN_USER" -g "$RUN_USER" "$STATE" "$STATE/vision" "$STATE/brain"
 
 # --- 4. Node.js + pnpm, JS deps, twin build ----------------------------------
 log "4/9 Node.js $NODE_VERSION, pnpm $PNPM_VERSION"
@@ -233,6 +235,7 @@ fi
 grep -q "CHANGE-ME" "$ENV_FILE" && warn "$ENV_FILE still has CHANGE-ME values (FCI_NIC)."
 
 log "Done. Nothing was started. Next (docs/NUC-BRINGUP.md):"
+log "  sudo bash $APP/deploy/brain/install-brain.sh   (the brain; section 4.1)"
 log "  edit $ENV_FILE and $ETC/caddy.env; sudo bash $APP/deploy/setup-fci-network.sh"
 log "  sudo bash $APP/deploy/preflight.sh"
-log "  sudo systemctl start robot-franka robot-vision robot-server caddy   (FRANKA_DRY_RUN=1 first)"
+log "  sudo systemctl start robot-intuition robot-reflection robot-franka robot-vision robot-server caddy   (FRANKA_DRY_RUN=1 first)"

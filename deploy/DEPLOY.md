@@ -6,7 +6,9 @@ Files in this folder:
 
 | File | Purpose |
 |---|---|
-| `install.sh` | Installs everything on the NUC (Ubuntu 22.04, x86_64). Starts nothing. |
+| `install.sh` | Installs everything on the NUC (Ubuntu 22.04, x86_64) except the brain. Starts nothing. |
+| `brain/install-brain.sh` | Installs the brain after `install.sh`: intuition sidecar (searchless_chess 9M), reflection SLM (llama.cpp + Qwen3-1.7B), optional Maia. Starts nothing. |
+| `brain/systemd/` | `robot-intuition` (127.0.0.1:8095), `robot-reflection` (127.0.0.1:8090). |
 | `robot-twin.env.template` | Configuration template -> `/etc/robot-twin/robot-twin.env`. No secrets. |
 | `caddy.env.template` | Caddy allowlist and port -> `/etc/robot-twin/caddy.env`. |
 | `Caddyfile` | Reverse proxy: twin, `/robot-ws`, `/vision/*`. |

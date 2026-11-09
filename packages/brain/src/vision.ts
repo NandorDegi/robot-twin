@@ -53,3 +53,47 @@ export class VisionObserver implements Observer {
     return parseObservation(await res.json());
   }
 }
+
+/**
+ * Validate the JSON from /board (apps/vision server.py): per square "w" | "b"
+ * | null from the calibrated empty-board difference, plus an optional
+ * per-square confidence. Colour only: `type` is always null.
+ */
+export function parseOccupancy(data: unknown): Observation {
+  const d = data as { ok?: boolean; error?: string; squares?: Record<string, unknown>; confidence?: Record<string, unknown>; time?: number };
+  if (!d || typeof d !== "object") throw new ObservationError("vision: response is not an object");
+  if (!d.ok || !d.squares || typeof d.squares !== "object") throw new ObservationError(`vision: ${d.error ?? "no board state"}`);
+  const squares: Record<string, SquareObservation> = {};
+  for (const sq of ALL_SQUARES) {
+    const v = d.squares[sq];
+    if (v !== "w" && v !== "b" && v !== null) throw new ObservationError(`vision: bad value for ${sq}`);
+    const c = Number(d.confidence?.[sq]);
+    squares[sq] = { color: v, type: null, confidence: Number.isFinite(c) ? Math.min(1, Math.max(0, c)) : 1 };
+  }
+  const ts = typeof d.time === "number" ? new Date(d.time * 1000).toISOString() : new Date().toISOString();
+  return { squares, source: "vision:board", timestamp: ts };
+}
+
+/**
+ * Observer backed by GET <VISION_URL>/board: the occupancy check of the
+ * calibrated camera (empty-board reference, the wizard's thresholds). This is
+ * the default camera check of the chess loop.
+ */
+export class OccupancyObserver implements Observer {
+  constructor(
+    private readonly baseUrl: string,
+    private readonly opts: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+  ) {}
+
+  async observe(): Promise<Observation> {
+    const f = this.opts.fetchImpl ?? fetch;
+    let res: Response;
+    try {
+      res = await f(`${this.baseUrl.replace(/\/$/, "")}/board`, { signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) });
+    } catch (err) {
+      throw new ObservationError(`vision service unreachable at ${this.baseUrl}: ${(err as Error).message}`);
+    }
+    if (!res.ok) throw new ObservationError(`vision HTTP ${res.status}`);
+    return parseOccupancy(await res.json());
+  }
+}

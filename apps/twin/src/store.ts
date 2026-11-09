@@ -17,8 +17,8 @@ interface TwinState {
   turn: string;
   lastSan: string;
   check: boolean;
-  opponentEnabled: boolean;
-  elo: number;
+  /** True while a game of the chess loop is running on the server. */
+  loopRunning: boolean;
   lastError: string;
   /** True once the server reported a real robot: never fall back to the local sim then. */
   everReal: boolean;
@@ -45,11 +45,10 @@ export const useTwin = create<TwinState>((set) => ({
   turn: "w",
   lastSan: "",
   check: false,
-  opponentEnabled: true,
-  elo: 1200,
+  loopRunning: false,
   lastError: "",
   everReal: false,
-  loopStage: "idle",
+  loopStage: "stopped",
   loopMessage: "",
   loopMismatches: [],
   decider: "",

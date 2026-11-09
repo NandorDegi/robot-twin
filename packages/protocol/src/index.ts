@@ -60,27 +60,11 @@ export const replaySchema = z.object({
   steps: z.array(recordStepSchema),
 });
 
+/** The human's move as text or speech (with the simulated board only: with a camera, play it on the board). */
 export const playSanSchema = z.object({
   type: z.literal("playSan"),
   san: z.string().min(1),
 });
-
-export const setOpponentSchema = z.object({
-  type: z.literal("setOpponent"),
-  enabled: z.boolean(),
-  elo: z.number().min(100).max(2800).optional(),
-});
-
-export const resetGameSchema = z.object({
-  type: z.literal("resetGame"),
-});
-
-/** Chess loop: read the board with the camera (infer the human move, then play). */
-export const syncBoardSchema = z.object({ type: z.literal("syncBoard") });
-/** Chess loop: the decider chooses a move for the side to move and the robot plays it. */
-export const robotMoveSchema = z.object({ type: z.literal("robotMove") });
-/** Chess loop: a person fixed the board; leave the fault state. */
-export const clearFaultSchema = z.object({ type: z.literal("clearFault") });
 
 export const clientMessageSchema = z.discriminatedUnion("type", [
   setTargetSchema,
@@ -93,11 +77,6 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   recordStopSchema,
   replaySchema,
   playSanSchema,
-  setOpponentSchema,
-  resetGameSchema,
-  syncBoardSchema,
-  robotMoveSchema,
-  clearFaultSchema,
   brainCommandSchema,
   ...calibClientSchemas,
 ]);
@@ -116,10 +95,11 @@ export type ServerMessage =
   | { type: "target"; position: Vec3; reached: boolean; error: number; success: boolean }
   | { type: "piece"; piece: { color: string; type: string; square: [number, number] } }
   | { type: "recorded"; steps: RecordedStep[] }
-  | { type: "chess"; fen: string; turn: string; lastSan: string; check: boolean; opponentEnabled: boolean; elo: number }
+  | { type: "chess"; fen: string; turn: string; lastSan: string; check: boolean; running: boolean }
   | {
       type: "loop";
-      stage: "idle" | "observing" | "deciding" | "moving" | "verifying" | "manual" | "fault";
+      /** The brain loop state, "stopped" (no game) or "paused" (refused by a gate). */
+      stage: "stopped" | "paused" | "idle" | "awaiting-human" | "robot-turn" | "acting" | "verifying" | "halted" | "game-over";
       message: string;
       mismatches: string[];
       verified: boolean;

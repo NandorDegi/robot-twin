@@ -305,3 +305,13 @@ def test_manual_corners_refuse_the_mirrored_order(api):
         a.post_corners({"corners": [[0, 0], [1, 0], [1, 1], [0, 1]]}, {})  # too small
     with pytest.raises(a.ApiError):
         a.post_thresholds({"diff": 1000}, {})
+
+
+def test_sim_scene_takes_a_whole_position(api):
+    a = calib_api
+    out = a.post_sim_scene({"pieces": {"e4": "w", "e5": "b"}}, {})
+    assert out["pieces"] == {"e4": "w", "e5": "b"}
+    with pytest.raises(a.ApiError):
+        a.post_sim_scene({"pieces": {"e9": "w"}}, {})
+    with pytest.raises(a.ApiError):
+        a.post_sim_scene({"pieces": {"e4": "q"}}, {})

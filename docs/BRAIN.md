@@ -14,8 +14,14 @@ The decision has two parts, both small AI models that run on the NUC's CPU:
   intuition's top candidates and the robot's own recent self-check notes, and
   chooses one candidate with a short reason.
 
-No chess engine (Stockfish or similar) is in the decision path. A remote fleet
-LLM is an optional reflection backend and is off by default.
+No chess engine (Stockfish or similar) and no search is in the decision path;
+the local minimax engine of the first version is removed. A remote fleet LLM is
+an optional reflection backend and is off by default.
+
+This is the server's only game loop. `apps/server/src/chess.ts` wires the
+`GameLoop` to the controller (single commander), the calibrated camera, the
+calibration gate and the twin. The bring-up steps are in
+[`docs/NUC-BRINGUP.md`](NUC-BRINGUP.md) (sections 0, 4.1, 7, 12).
 
 ## Architecture
 
@@ -23,9 +29,10 @@ LLM is an optional reflection backend and is off by default.
             USB camera over the board
                        |
           +------------v-------------+
-          | vision service (Python)  |  GET /observe -> 64 squares:
-          | YOLO (OpenVINO) or       |    colour, type, confidence
-          | colour heuristic         |
+          | vision service (Python)  |  GET /board (default): 64 squares,
+          | calibrated by the wizard |    colour + confidence (empty-board
+          |                          |    reference); GET /observe: colour,
+          |                          |    type, confidence (YOLO/heuristic)
           +------------+-------------+
                        | Observation
 +----------------------v-----------------------------------------------+
@@ -49,14 +56,20 @@ LLM is an optional reflection backend and is off by default.
 |     +---- human's move: diff observations, --------+-----+          |
 |           find the legal move that explains it                       |
 |                                                                      |
-|  every cycle --> logs/brain.jsonl (prediction, observation, diff,    |
+|  every cycle --> BRAIN_LOG JSONL (prediction, observation, diff,     |
 |                  decision, rationale): the dataset for learning      |
 +---------+-------------------------------+----------------------------+
           | pick/place steps              | events (WebSocket)
           v                               v
-  RobotController -> RobotAdapter     twin: brain panel (state, rationale,
-  (Simulated by default; Franka        questions + answer buttons)
+  RobotController -> RobotAdapter     twin: brain panel (Start/Stop/Resume,
+  (Simulated by default; Franka        state, rationale, questions + answers)
    via the panda-py bridge)
+
+  safety in apps/server/src/chess.ts: stopped at server start; calibration
+  gate before start and every step; the arm parks out of the camera view
+  before every look; any halt DISABLES the robot; no step while disabled;
+  manual motion refused while the loop runs; the simulated board is refused
+  on a real robot.
 
   sidecars on the NUC:  intuition  127.0.0.1:8095  (searchless_chess, JAX CPU)
                         reflection 127.0.0.1:8090  (llama.cpp llama-server)
@@ -67,7 +80,8 @@ Code:
 | Part | Where |
 |---|---|
 | Decision interface, intuition, reflection, self-check, loop, simulator | `packages/brain/src/` |
-| Server wiring, arm actor (approach from above) | `apps/server/src/brain-session.ts` |
+| Server wiring: the one chess loop, arm actor, parked observer, safety | `apps/server/src/chess.ts` |
+| Calibrated occupancy observer (`GET /board`) | `packages/brain/src/vision.ts` (`OccupancyObserver`) |
 | WebSocket messages | `packages/protocol/src/brain.ts` |
 | Twin panel | `apps/twin/src/brainpanel.ts` |
 | Intuition sidecar (searchless_chess) | `apps/intuition/intuition_server.py` |
@@ -176,11 +190,15 @@ Robot turn (`GameLoop.robotTurn`):
 3. **Validate.** The move must be legal in `packages/chess`.
 4. **Predict.** `applyMove()` gives the expected board (the forward model).
 5. **Act.** `planMove()` gives pick/place steps; the actor carries them out. The
-   server actor approaches each square from 80 mm above, descends, grips,
-   rises, and throws on an unreachable target.
+   server actor (`ControllerActor`) approaches each square from
+   `APPROACH_HEIGHT_MM` (100 mm) above, descends, grips, rises; a failed motion
+   or gripper command throws, and the loop halts.
 6. **Observe again and compare.** Up to `verifyAttempts` (3) looks, `settleMs`
    apart, so a short occlusion by the arm does not count as a failure.
 7. **Match**: commit the move, continue. **Mismatch**: stop, report, ask.
+
+A camera failure (vision unreachable, not calibrated, the arm cannot reach the
+observe pose) is a halt too, with the reason: the loop never guesses.
 
 Human turn (`GameLoop.humanTurn`): observe; wait until `stableFrames` (2)
 consecutive observations are identical (hand out of view); then find the legal
@@ -288,9 +306,11 @@ To add a brain: implement `Brain` (or only a `PolicyModel`), add a case in
 | `REFLECTION_URL`, `REFLECTION_MODEL`, `REFLECTION_KEY_FILE` | `http://127.0.0.1:8090/v1`, `qwen3-1.7b`, - | local SLM |
 | `REFLECTION_TIMEOUT_MS`, `REFLECTION_THINKING`, `REFLECTION_MAX_TOKENS` | 20000, 0, 160 (768 with thinking) | time limit, thinking, token cap |
 | `FLEET_LLM_URL`, `FLEET_LLM_MODEL`, `FLEET_LLM_KEY_FILE` | - | remote reflection (off by default) |
-| `BRAIN_OBSERVER` | `sim` | `sim` (simulated board) or `vision` |
-| `VISION_URL` | `http://127.0.0.1:8081` | vision service |
-| `BRAIN_ROBOT_COLOR`, `BRAIN_MIN_CONFIDENCE`, `BRAIN_POLL_MS`, `BRAIN_LOG`, `BRAIN_COMMENTARY` | `b`, 0.6, 500, `logs/brain.jsonl`, 0 | loop |
+| `BRAIN_OBSERVER` | `vision` when `VISION_URL` is set, else `sim` | `vision` (`/board`, calibrated occupancy), `observe` (`/observe`, piece detector) or `sim` (simulated board; refused when `CHESS_REQUIRE_VISION=1`) |
+| `VISION_URL` | - | vision service (`http://127.0.0.1:8081` on the NUC) |
+| `CHESS_REQUIRE_VISION`, `CHESS_REQUIRE_CALIBRATION` | 1 on a real robot; 1 with `VISION_URL` or a real robot | safety gates |
+| `CHESS_OBSERVE_POSE`, `CHESS_SETTLE_MS` | ready pose turned 90 deg about joint 1, 500 | where the arm waits during a look |
+| `BRAIN_ROBOT_COLOR`, `BRAIN_MIN_CONFIDENCE`, `BRAIN_POLL_MS`, `BRAIN_LOG`, `BRAIN_COMMENTARY` | `b`, 0.6, 500, `logs/brain.jsonl` (NUC: `/var/lib/robot-twin/brain/brain.jsonl`), 0 | loop |
 
 Vision side: `VISION_OBSERVE_MODEL` (YOLO `.pt`, `.onnx` or `*_openvino_model/`),
 `VISION_OBSERVE_MIN_CONF` (0.25), `VISION_OBSERVE_EMPTY_CONF` (0.9),
@@ -337,38 +357,26 @@ numbers.
 - YOLO training not run (needs ultralytics + torch on a GPU node); the dataset
   capture and auto-labelling are tested on tiny synthetic images.
 - `LearnedPolicyModel` is a stub. SLM fine-tuning is not implemented.
-- The brain loop and the existing `ChessSession` (playSan + bot) both drive the
-  arm. Use one at a time.
+- With the default `/board` camera check the robot sees colours only: a wrong
+  piece TYPE on the right square is not detected (`BRAIN_OBSERVER=observe` with
+  a trained detector sees types).
 - `apps/vision/vision/pieces.py` (`/detect`) is unchanged; the brain uses the
   new `/observe`.
 
 ## NUC bring-up: the brain
 
-For the NUC bring-up guide. Order: arm and vision first (see the main guide),
-then the brain.
+The steps are in [`docs/NUC-BRINGUP.md`](NUC-BRINGUP.md): install and check
+the brain in section 4.1 (`deploy/brain/install-brain.sh`,
+`robot-intuition.service` on 127.0.0.1:8095, `robot-reflection.service` on
+127.0.0.1:8090), the first brain move on the simulated board in section 7, the
+calibration with the wizard in sections 10-11, and a game on the board in
+section 12. Then:
 
-1. **Install** (downloads about 1.2 GB; needs sudo):
-   `deploy/brain/install-brain.sh`. It installs the intuition sidecar (searchless
-   9M checkpoint, SHA-256 checked) and builds llama.cpp with the Qwen3-1.7B
-   GGUF, and enables `robot.intuition.service` (port 8095) and
-   `robot.reflection.service` (port 8090), both on 127.0.0.1 only.
-   Options: `WITH_MAIA=1` (builds lc0, fetches `maia-1500.pb.gz`),
-   `WITH_136M=1` (1.0 GB more).
-2. **Check**: `curl -s 127.0.0.1:8095/health`, `curl -s 127.0.0.1:8090/health`.
-   The install runs one `bench`; note its `p50_ms` here.
-3. **Calibrate the camera** with the ArUco markers (`apps/vision/calibrate.py`),
-   then check `curl -s 127.0.0.1:8081/observe`: 64 squares, sensible colours.
-4. **Server environment** (`robot.stack.service`): `BRAIN_OBSERVER=vision`,
-   and for the real arm `ROBOT_ADAPTER=franka`. Defaults for the rest.
-5. **First game in simulation**: `BRAIN_OBSERVER=sim`, open the twin, brain
-   panel, Start. Play moves with "Play (sim)"; try "Fault: drop" and check that
-   the robot stops and explains.
-6. **First game on the board**: arm enabled, hands out of the camera view while
-   the robot moves. When it stops, read the squares and hints in the panel,
-   fix the board, press "I fixed the board, look again".
-7. **Train the detector** once a few games are logged: `apps/vision/training/README.md`.
+- **Train the detector** once a few games are logged:
+  `apps/vision/training/README.md`, and set `VISION_OBSERVE_MODEL` and
+  `BRAIN_OBSERVER=observe` when it is better than the occupancy check.
 
 What the operator provides: the camera fixed over the board, the four ArUco
-markers and calibration photos, a few hundred labelled frames (the capture
-script makes them from played positions), and a GPU node for the YOLO
-fine-tune. No chess engine is needed.
+markers, a few hundred labelled frames (the capture script makes them from
+played positions), and a GPU node for the YOLO fine-tune. No chess engine is
+needed.

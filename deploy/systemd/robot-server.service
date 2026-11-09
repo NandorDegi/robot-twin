@@ -1,7 +1,7 @@
 [Unit]
-Description=robot-twin robot server (controller, chess loop, twin WebSocket)
-After=robot-franka.service robot-vision.service
-Wants=robot-franka.service robot-vision.service
+Description=robot-twin robot server (controller, chess loop with the brain, twin WebSocket)
+After=robot-franka.service robot-vision.service robot-intuition.service robot-reflection.service
+Wants=robot-franka.service robot-vision.service robot-intuition.service robot-reflection.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
 
@@ -19,6 +19,8 @@ Nice=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
+# The chess loop's JSONL log (BRAIN_LOG).
+ReadWritePaths=/var/lib/robot-twin/brain
 PrivateTmp=yes
 
 [Install]

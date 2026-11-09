@@ -40,9 +40,11 @@ Browser (twin) --> Caddy :5909 --> /robot-ws --> robot server (Node, 127.0.0.1:3
   validates every goal again and runs in dry-run mode by default.
 - The **robot server** (`apps/server`) validates every goal (Panda limits,
   self-collision, floor, the straight joint path), sends only whole goals to
-  the real robot, starts disabled, and runs the chess loop:
-  camera -> board state -> decision -> pick/place -> camera verification.
-  The decision step is pluggable (`apps/server/src/decider.ts`).
+  the real robot, starts disabled, and runs the one chess loop
+  (`apps/server/src/chess.ts`): camera -> pre-check -> decision -> predict ->
+  pick/place -> camera verification. The decision maker is the brain
+  (`packages/brain`, [`docs/BRAIN.md`](docs/BRAIN.md)): a searchless policy
+  network (intuition) and a small LM (reflection). No chess engine.
 - The ROS 2 / MoveIt bridge (`apps/ws_bridge`) is optional and off by default.
 
 Bring-up on the NUC: [`docs/NUC-BRINGUP.md`](docs/NUC-BRINGUP.md).
@@ -170,23 +172,23 @@ A full chess loop is wired in:
   understands captures (`e takes d5` → `exd5`, `knight takes c6` → `Nxc6`),
   castling (`long castle` / `queen side castle` / `o-o-o` → `O-O-O`; `castle
   king side` → `O-O`), checks, promotions, and ignores filler words. Light
-  mis-hearings of piece names (`night` for `knight`) are handled too. The
-  server parses the SAN, plans the pick/place steps, and the arm plays the move
-  (grab → lift → place; captures go to a tray).
-- **Opponent mode**: toggle a bot with a variable-ElO slider (minimax with
-  alpha-beta + material/piece-square eval; depth & noise scale with Elo).
-  Alternatively, set `CHESS_DECIDER_URL` to a service that gets
-  `{"fen", "legal", "side"}` and returns `{"uci": "..."}` or `{"san": "..."}`
-  (an LLM agent or a learned policy). Only legal moves are accepted.
+  mis-hearings of piece names (`night` for `knight`) are handled too. With
+  the simulated board (`BRAIN_OBSERVER=sim`) the simulated hand plays your
+  move; with a camera you play it on the board and the camera reads it.
+- **The robot's moves** come from the brain loop: press **Start** in the Robot
+  brain panel. The brain proposes, the server accepts a legal move only, the
+  arm plays it (grab → lift → place; captures go to a tray), and the camera
+  verifies it. On any difference the robot stops, is disabled, and asks.
 
 ```bash
-# optional: play against an agent through the model router
-CHESS_DECIDER_URL=http://<router>/move pnpm dev:server
+# the brain without its sidecars (uniform intuition, no reflection), simulated board
+BRAIN_INTUITION=uniform BRAIN_REFLECTION=off BRAIN_OBSERVER=sim pnpm dev:server
 ```
 
 ### Chess
 
-The chess engine lives in `packages/chess`. A move (UCI, e.g. `e2e4`) is turned
+The chess rules (move generation, SAN, FEN, the pick/place planner) live in
+`packages/chess`. A move (UCI, e.g. `e2e4`) is turned
 into an ordered pick/place plan (captures go to a tray; castling moves the rook
 first). Example:
 
