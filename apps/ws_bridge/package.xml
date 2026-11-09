@@ -3,24 +3,24 @@
 <package format="3">
   <name>ws_bridge</name>
   <version>0.1.0</version>
-  <description>WebSocket bridge between the robot-twin UI and MoveIt / ros2_control for the Franka Panda.</description>
+  <description>OPTIONAL WebSocket bridge between the robot-twin UI and MoveIt for the Franka Panda (not part of the v1 deployment).</description>
   <maintainer email="dev@rde.local">RDE robot-twin</maintainer>
   <license>Apache-2.0</license>
 
-  <depend>rclpy</depend>
-  <depend>sensor_msgs</depend>
-  <depend>std_msgs</depend>
-  <depend>geometry_msgs</depend>
-  <depend>trajectory_msgs</depend>
-  <depend>moveit_msgs</depend>
-  <depend>control_msgs</depend>
-  <depend>franka_msgs</depend>
-  <depend>python3-websockets</depend>
-
-  <test_depend>pytest</test_depend>
-
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>shape_msgs</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend>
+  <!-- websockets >= 10.4 from pip: the Ubuntu 22.04 apt package (9.1) fails on
+       Python 3.10 (asyncio.Lock(loop=...)). deploy/install.sh installs it. -->
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <!-- franka_moveit_config comes from a franka_ros2 source build (not in rosdep). -->
+
+  <test_depend>python3-pytest</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

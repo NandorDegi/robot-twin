@@ -1,11 +1,15 @@
-"""Bring up the whole robot-twin stack: Franka hardware, ros2_control,
-MoveIt move_group, and the ws_bridge.
+"""OPTIONAL ROS 2 stack: franka_ros2 MoveIt bringup + the ws_bridge.
 
-Usage (on the NUC, from the workspace root):
-    ros2 launch ws_bridge stack.launch.py
+Not part of the v1 deployment (see ws_bridge/node.py). Usage:
+    ros2 launch ws_bridge stack.launch.py robot_ip:=172.16.0.2 use_fake_hardware:=true
 
-The controller names and the robot-description source must match your
-franka_ros2 install / URDF. See deploy/DEPLOY.md for the values to check.
+franka_moveit_config/launch/moveit.launch.py (franka_ros2 0.1.x) starts the
+ros2_control node with franka_hardware, the controllers, the gripper and
+move_group. Do NOT also include franka_bringup/franka.launch.py: that would
+start a second controller manager that connects to the same robot.
+
+Check the declared arguments of your franka_ros2 release with
+    ros2 launch franka_moveit_config moveit.launch.py --show-args
 """
 
 import os
@@ -14,42 +18,30 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
-    # Franka hardware + ros2_control. `franka_bringup` (in franka_ros2) launches
-    # the controller manager, the joint_state_broadcaster and the
-    # joint_trajectory_controller with the robot_description from the URDF.
-    franka_share = get_package_share_directory("franka_bringup")
-    franka_launch = os.path.join(franka_share, "launch", "franka.launch.py")
-
-    # MoveIt move_group (planning + collision). `franka_moveit_config` in
-    # franka_ros2 provides a moveit.launch.py with the Panda SRDF / kinematics.
-    moveit_share = get_package_share_directory("franka_moveit_config")
-    moveit_launch = os.path.join(moveit_share, "launch", "moveit.launch.py")
-
+    moveit_launch = os.path.join(get_package_share_directory("franka_moveit_config"), "launch", "moveit.launch.py")
     return LaunchDescription(
         [
-            DeclareLaunchArgument("robot_ip", default_value="192.168.1.4",
-                                  description="IP of the Panda control unit (FCI)"),
-            DeclareLaunchArgument("use_rviz", default_value="false",
-                                  description="Launch RViz alongside MoveIt"),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(franka_launch),
-                launch_arguments={"robot_ip": LaunchConfiguration("robot_ip")}.items(),
+            DeclareLaunchArgument(
+                "robot_ip",
+                default_value=EnvironmentVariable("FRANKA_HOST", default_value="172.16.0.2"),
+                description="IP of the Panda control unit (FCI)",
             ),
+            # Simulation by default. Set use_fake_hardware:=false for the robot.
+            DeclareLaunchArgument("use_fake_hardware", default_value="true"),
+            DeclareLaunchArgument("use_rviz", default_value="false"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(moveit_launch),
-                launch_arguments={"use_rviz": LaunchConfiguration("use_rviz")}.items(),
+                launch_arguments={
+                    "robot_ip": LaunchConfiguration("robot_ip"),
+                    "use_fake_hardware": LaunchConfiguration("use_fake_hardware"),
+                    "use_rviz": LaunchConfiguration("use_rviz"),
+                }.items(),
             ),
-            # WebSocket bridge for the twin.
-            Node(
-                package="ws_bridge",
-                executable="ws_bridge",
-                name="ws_bridge",
-                output="screen",
-            ),
+            Node(package="ws_bridge", executable="ws_bridge", name="ws_bridge", output="screen"),
         ]
     )

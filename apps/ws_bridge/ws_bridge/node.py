@@ -1,74 +1,64 @@
-"""ROS 2 WebSocket bridge between the robot-twin UI and MoveIt.
+"""ROS 2 WebSocket bridge between the robot-twin UI and MoveIt (OPTIONAL).
 
-The twin connects to ``/robot-ws`` (proxied by Caddy to this node) and speaks the
-JSON protocol in :mod:`ws_bridge.protocol`. This node translates those messages
-into MoveIt / ros2_control calls:
+Status: OPTIONAL and EXPERIMENTAL. It is not part of the v1 deployment. The
+supported real-robot path for the Panda (FER) is apps/franka (panda-py with
+libfranka 0.9.2) behind the Node server. The franka_ros2 main line targets the
+FR3 and a newer libfranka; a Panda needs an older franka_ros2 release and
+libfranka 0.9.x (see docs/NUC-BRINGUP.md, "Optional: ROS 2"). Never run this
+stack and the Franka bridge at the same time: only one process may command
+the arm (the systemd units conflict).
 
-  * ``setTarget``  -> MoveIt ``move_group`` plan + execute (end-effector goal).
-  * ``setJointState`` -> ``FollowJointTrajectory`` on the trajectory controller.
-  * ``gripper``    -> the franka gripper controller (open/close).
-  * ``estop``      -> publish on the emergency-stop topic.
-  * ``setEnabled`` -> motion gate (no goals sent while disabled).
-  * ``home``       -> plan to the neutral joint state.
+What it does:
+  * mirrors /joint_states (mapped by joint NAME) to the twin protocol;
+  * with BRIDGE_EXPERIMENTAL_MOTION=1 only: ``setTarget`` -> MoveIt
+    move_group plan+execute, hand pointing down, 5 mm / 0.05 rad tolerance,
+    velocity and acceleration scaling 0.1 (capped at 0.3);
+  * ``estop`` cancels the MoveIt goal and publishes "stop" on
+    /trajectory_execution_event;
+  * motion is disabled at start, and when the last client disconnects.
 
-The robot's real state is read from ``/joint_states`` and forwarded to the twin.
-
-NOTE: the values that must match the installed ``franka_moveit_config`` are read
-from the environment (see :mod:`ws_bridge.config`): the MoveIt group name, the
-goal/planning frame, and the controller names. The twin target is in the model
-frame (mm, Y-up); MoveIt plans in the robot base frame (m, Z-up), so the target
-is converted before planning (TWIN_BASE_ROT controls the mapping).
+Joint goals, gripper, chess and replay are not implemented here.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
+import time
 from typing import Any, Dict, List, Optional, Set
 
 from . import protocol, config
 
-# --- MoveIt frame conversion -------------------------------------------------
-# The twin model uses base rotation RotX(-90) to map the URDF (Z-up) frame to the
-# twin (Y-up) frame. Therefore a twin point (mm, Y-up) maps back to the robot
-# base frame (m, Z-up) as x_b=x_t, y_b=-z_t, z_b=y_t, then /1000. Verify this
-# against your URDF/base before trusting motion (see DEPLOY.md).
-_TWIN_BASE_ROT = "x-90"
 
-
-def twin_to_moveit(pos_mm: List[float], base_rot: str = _TWIN_BASE_ROT) -> List[float]:
+def twin_to_moveit(pos_mm: List[float]) -> List[float]:
+    """Twin point (mm, Y-up, T = RotX(-90) * B) -> robot base frame (m, Z-up)."""
     x, y, z = (float(v) for v in pos_mm)
-    if base_rot == "x-90":  # p_twin = R_x(-90) * p_urdf
-        x_b, y_b, z_b = x, -z, y
-    else:
-        x_b, y_b, z_b = x, y, z
-    return [x_b / 1000.0, y_b / 1000.0, z_b / 1000.0]
+    return [x / 1000.0, -z / 1000.0, y / 1000.0]
 
 
-# --- ROS imports (guarded so the module can be imported for lint without ROS) --
 try:
     import rclpy
     from rclpy.node import Node
     from rclpy.action import ActionClient
-    from rclpy.duration import Duration
-    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.executors import MultiThreadedExecutor
 
-    from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
+    from geometry_msgs.msg import Pose, Point, Quaternion
     from sensor_msgs.msg import JointState
-    from std_msgs.msg import Bool
-    from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+    from std_msgs.msg import String
     from moveit_msgs.action import MoveGroup
-    from moveit_msgs.msg import MotionPlanRequest, MoveItErrorCodes
-    from control_msgs.action import FollowJointTrajectory
+    from moveit_msgs.msg import (
+        Constraints,
+        MotionPlanRequest,
+        OrientationConstraint,
+        PositionConstraint,
+    )
+    from shape_msgs.msg import SolidPrimitive
 
     _ROS_AVAILABLE = True
 except ImportError:  # pragma: no cover - ROS is only on the NUC
     _ROS_AVAILABLE = False
 
-
-# The node subclasses rclpy.Node when ROS is importable; otherwise it degrades to
-# a plain class so the module (and the frame-conversion helper) can be imported
-# and unit-tested on a machine without ROS.
 _BASE = Node if _ROS_AVAILABLE else object
 
 
@@ -76,165 +66,207 @@ class BridgeNode(_BASE):
     def __init__(self, settings: config.Settings):
         super().__init__(*(["ws_bridge"] if _ROS_AVAILABLE else []))
         self.settings = settings
-        self._clients: Set[asyncio.StreamWriter] = set()
+        self._clients: Set[Any] = set()
         self._latest_q: List[float] = []
+        self._q_stamp = 0.0
         self._gripper_open = False
-        self._enabled = True
-        self._mode = "move"
+        self._enabled = False
+        self._mode = "hold"
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._goal_handle = None
+        self._names = [j.name for j in config.PANDA_JOINTS]
 
         if _ROS_AVAILABLE:
-            self.get_logger().info("ws_bridge starting (ROS available)")
-            self._joints_sub = self.create_subscription(
-                JointState, settings.joint_states_topic, self._on_joint_states, 10
-            )
+            self.create_subscription(JointState, settings.joint_states_topic, self._on_joint_states, 10)
             self._move_client = ActionClient(self, MoveGroup, "/move_action")
-            self._traj_client = ActionClient(self, FollowJointTrajectory, f"/{settings.traj_controller}/follow_joint_trajectory")
-            self._estop_pub = self.create_publisher(Bool, settings.estop_topic, 10)
-        else:
-            self.get_logger().warn("ROS not importable; running the WS bridge with no move support")
+            self._exec_event_pub = self.create_publisher(String, "/trajectory_execution_event", 10)
+            self.get_logger().info(
+                f"ws_bridge starting; experimental motion={'ON' if config.EXPERIMENTAL_MOTION else 'OFF'}"
+            )
 
-    # ---- joint state ---------------------------------------------------------
+    # ---- joint state (ROS executor thread) ----------------------------------
     def _on_joint_states(self, msg) -> None:
-        self._latest_q = list(msg.position)
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(self._broadcast(), self._loop)
+        pos = dict(zip(msg.name, msg.position))
+        if all(n in pos for n in self._names):
+            self._latest_q = [float(pos[n]) for n in self._names]
+            self._q_stamp = time.monotonic()
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(self._broadcast(), self._loop)
 
-    # ---- websocket server ----------------------------------------------------
-    async def _ws_handler(self, websocket) -> None:
-        await websocket.send(protocol.state_message(self._latest_q, self._gripper_open, self._enabled, self._mode))
-        await websocket.send(protocol.robot_message())
-        async for raw in websocket:
-            try:
-                msg = protocol.parse_client_message(raw)
-                await self._handle(msg, websocket)
-            except NotImplementedError:
-                await websocket.send(protocol.error_message("not implemented on the ROS 2 bridge"))
-            except ValueError as exc:
-                await websocket.send(protocol.error_message(str(exc)))
+    # ---- websocket server (asyncio thread) ----------------------------------
+    async def _send(self, ws, msg: dict) -> None:
+        await ws.send(json.dumps(msg))
+
+    async def _ws_handler(self, websocket, _path: str = "") -> None:
+        # websockets >= 10.1 calls handler(ws); 9.x (Ubuntu 22.04 apt) calls handler(ws, path).
+        self._clients.add(websocket)
+        try:
+            await self._send(websocket, self._state())
+            await self._send(websocket, config.robot_message())
+            async for raw in websocket:
+                try:
+                    msg = protocol.parse_client_message(raw)
+                    await self._handle(msg, websocket)
+                except NotImplementedError as exc:
+                    await self._send(websocket, protocol.error_message(str(exc) or "not implemented on the ROS 2 bridge"))
+                except ValueError as exc:
+                    await self._send(websocket, protocol.error_message(str(exc)))
+        finally:
+            self._clients.discard(websocket)
+            if not self._clients:
+                self._enabled = False
+                self._mode = "hold"
+                await self._stop_motion()
+
+    def _state(self) -> dict:
+        return protocol.state_message(self._latest_q, self._gripper_open, self._enabled, self._mode)
 
     async def _handle(self, msg: Dict[str, Any], websocket) -> None:
         t = msg["type"]
         if t == "setTarget":
             pos = twin_to_moveit(msg["target"]["position"])
-            ok = await self._move_to_target(pos)
-            await websocket.send(protocol.target_message(pos, ok, 0.0, ok))
-        elif t == "setJointState":
-            await self._move_to_joint_state(msg["q"])
-        elif t == "gripper":
-            await self._set_gripper(msg["open"])
+            ok, err = await self._move_to_target(pos)
+            await self._send(websocket, protocol.target_message(msg["target"]["position"], ok, 0.0, ok))
+            if not ok:
+                await self._send(websocket, protocol.error_message(err))
         elif t == "setEnabled":
             self._enabled = msg["enabled"]
             self._mode = "move" if self._enabled else "hold"
+            if not self._enabled:
+                await self._stop_motion()
+            await self._broadcast()
         elif t == "estop":
-            self._estop()
-        elif t == "home":
-            await self._move_to_joint_state(_home_q())
+            self._enabled = False
+            self._mode = "estop"
+            await self._stop_motion()
+            await self._broadcast()
+        elif t in ("setJointState", "home", "gripper"):
+            raise NotImplementedError(f"{t} is not implemented on the ROS 2 bridge")
+        # recordStart/recordStop/resetGame: accepted, nothing to do here.
 
     async def _broadcast(self) -> None:
-        if not self._clients:
-            return
-        msg = protocol.state_message(self._latest_q, self._gripper_open, self._enabled, self._mode)
+        msg = json.dumps(self._state())
         for ws in list(self._clients):
             try:
                 await ws.send(msg)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 self._clients.discard(ws)
 
-    # ---- MoveIt / controller -------------------------------------------------
-    async def _move_to_target(self, pos: List[float]) -> bool:
+    # ---- MoveIt -------------------------------------------------------------
+    async def _ros_future(self, fut):
+        """Await an rclpy future from the asyncio loop."""
+        loop = asyncio.get_running_loop()
+        afut = loop.create_future()
+
+        def done(f):
+            loop.call_soon_threadsafe(lambda: afut.done() or afut.set_result(f.result()))
+
+        fut.add_done_callback(done)
+        return await afut
+
+    async def _move_to_target(self, pos: List[float]):
+        if not config.EXPERIMENTAL_MOTION:
+            return False, "motion through the ROS 2 bridge is disabled (BRIDGE_EXPERIMENTAL_MOTION=0)"
         if not self._enabled:
-            return False
+            return False, "disabled"
         if not _ROS_AVAILABLE:
-            return False
+            return False, "ROS not available"
+        if time.monotonic() - self._q_stamp > 0.5:
+            return False, "no fresh /joint_states; refusing to plan"
+        if not self._move_client.wait_for_server(timeout_sec=2.0):
+            return False, "move_group action server not available"
         goal = MoveGroup.Goal()
-        goal.request = MotionPlanRequest()
-        goal.request.group_name = self.settings.move_group
-        goal.request.goal_constraints = _position_goal(self.settings.ee_link, pos)
-        goal.request.allowed_planning_time = 2.0
-        await self._move_client.wait_for_server()
-        result = await self._move_client.send_goal_async(goal)
-        return bool(result.accepted)
+        goal.request = _pose_request(self.settings, pos)
+        goal.planning_options.plan_only = False
+        goal.planning_options.planning_scene_diff.is_diff = True
+        goal.planning_options.planning_scene_diff.robot_state.is_diff = True
+        handle = await self._ros_future(self._move_client.send_goal_async(goal))
+        if not handle.accepted:
+            return False, "MoveIt rejected the goal"
+        self._goal_handle = handle
+        result = await self._ros_future(handle.get_result_async())
+        self._goal_handle = None
+        code = result.result.error_code.val
+        return (code == 1), ("" if code == 1 else f"MoveIt error code {code}")
 
-    async def _move_to_joint_state(self, q: List[float]) -> bool:
-        if not self._enabled or not _ROS_AVAILABLE:
-            return False
-        msg = FollowJointTrajectory.Goal()
-        msg.trajectory = JointTrajectory()
-        msg.trajectory.joint_names = [j.name for j in config.PANDA_JOINTS]
-        pt = JointTrajectoryPoint()
-        pt.positions = [float(v) for v in q]
-        pt.time_from_start = Duration(seconds=1.0).to_msg()
-        msg.trajectory.points = [pt]
-        await self._traj_client.wait_for_server()
-        result = await self._traj_client.send_goal_async(msg)
-        return bool(result.accepted)
-
-    async def _set_gripper(self, open_it: bool) -> bool:
-        self._gripper_open = open_it
-        # The franka gripper is driven by its controller action. Config the
-        # gripper_controller / action name in DEPLOY.md to match franka_ros2.
-        return True
-
-    def _estop(self) -> None:
-        self._enabled = False
-        self._mode = "estop"
-        if _ROS_AVAILABLE:
-            msg = Bool()
-            msg.data = True
-            self._estop_pub.publish(msg)
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(self._broadcast(), self._loop)
+    async def _stop_motion(self) -> None:
+        if not _ROS_AVAILABLE:
+            return
+        msg = String()
+        msg.data = "stop"
+        self._exec_event_pub.publish(msg)
+        if self._goal_handle is not None:
+            try:
+                await self._ros_future(self._goal_handle.cancel_goal_async())
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---- lifecycle -----------------------------------------------------------
     async def _serve(self) -> None:
         import websockets
 
-        async with websockets.serve(
-            self._ws_handler, self.settings.ws_host, self.settings.ws_port, subprotocols=["robot"]
-        ):
+        major, minor = (int(x) for x in websockets.__version__.split(".")[:2])
+        if (major, minor) < (10, 4):
+            raise SystemExit(
+                f"websockets {websockets.__version__} is too old (Ubuntu 22.04 apt ships a broken 9.1); "
+                "pip install 'websockets>=10.4,<14'"
+            )
+
+        async with websockets.serve(self._ws_handler, self.settings.ws_host, self.settings.ws_port):
             self.get_logger().info(f"ws_bridge serving on ws://{self.settings.ws_host}:{self.settings.ws_port}")
             await asyncio.Future()
 
-    def spin_async(self) -> None:
+    def run(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._loop.run_until_complete(self._serve())
 
 
-def _home_q() -> List[float]:
-    # Neutral pose (radians) = midpoint of each joint range.
-    import math
-
-    return [math.radians((j.min_deg + j.max_deg) / 2.0) for j in config.PANDA_JOINTS]
-
-
-def _position_goal(ee_link: str, pos: List[float]) -> List["object"]:
-    """Build a MoveIt position-only goal constraint for the EE link."""
-    from moveit_msgs.msg import Constraints, OrientationConstraint, PositionConstraint
-    from geometry_msgs.msg import Point as GPoint
-    from shape_msgs.msg import SolidPrimitive
-
-    c = Constraints()
+def _pose_request(settings: "config.Settings", pos: List[float]):
+    """Pose goal for the hand link: TCP at pos, hand pointing straight down."""
+    req = MotionPlanRequest()
+    req.group_name = settings.move_group
+    req.num_planning_attempts = 5
+    req.allowed_planning_time = 5.0
+    req.max_velocity_scaling_factor = config.VELOCITY_SCALING
+    req.max_acceleration_scaling_factor = config.VELOCITY_SCALING
+    req.start_state.is_diff = True
+    # The goal link is the hand (panda_hand); its origin is TCP_OFFSET_M above
+    # the TCP when the hand points down.
+    target = Point(x=pos[0], y=pos[1], z=pos[2] + config.TCP_OFFSET_M)
     pc = PositionConstraint()
-    pc.link_name = ee_link
-    s = SolidPrimitive()
-    s.type = SolidPrimitive.SPHERE
-    s.dimensions = [0.15]  # 15 cm radius region around the target
-    pc.constraint_region.primitives = [s]
-    pc.constraint_region.primitive_poses = [Pose(Point(*pos), Quaternion(0, 0, 0, 1))]
-    c.position_constraints = [pc]
-    return [c]
+    pc.header.frame_id = config.BASE_FRAME
+    pc.link_name = settings.ee_link
+    sphere = SolidPrimitive(type=SolidPrimitive.SPHERE, dimensions=[0.005])
+    pc.constraint_region.primitives = [sphere]
+    pc.constraint_region.primitive_poses = [Pose(position=target, orientation=Quaternion(w=1.0))]
+    pc.weight = 1.0
+    oc = OrientationConstraint()
+    oc.header.frame_id = config.BASE_FRAME
+    oc.link_name = settings.ee_link
+    oc.orientation = Quaternion(x=1.0, y=0.0, z=0.0, w=0.0)  # RotX(180): z down
+    oc.absolute_x_axis_tolerance = 0.05
+    oc.absolute_y_axis_tolerance = 0.05
+    oc.absolute_z_axis_tolerance = 3.15  # yaw free
+    oc.weight = 1.0
+    req.goal_constraints = [Constraints(position_constraints=[pc], orientation_constraints=[oc])]
+    return req
 
 
 def main():
-    import rclpy
-
     rclpy.init()
     node = BridgeNode(config.Settings())
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
     try:
-        node.spin_async()
+        node.run()
+    except KeyboardInterrupt:
+        pass
     finally:
+        executor.shutdown()
+        node.destroy_node()
         rclpy.shutdown()
 
 

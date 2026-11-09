@@ -19,17 +19,28 @@ class Joint:
     max_deg: float
 
 
-# Official Franka Emika Panda values (degrees). Used to describe the arm to the
-# twin UI. The kinematics in the twin use the same values.
+# Arm prefix of the joint names in the URDF: "panda" gives panda_joint1..7
+# (franka_ros2 0.1.x with a Panda); "fr3" gives fr3_joint1..7.
+ARM_ID = os.environ.get("BRIDGE_ARM_ID", "panda")
+
+# Official Franka Emika Panda (FER) limits in degrees (packages/robot-config/
+# panda-limits.json). Used to describe the arm to the twin UI.
 PANDA_JOINTS: List[Joint] = [
-    Joint("joint1", -166.2, 166.2),
-    Joint("joint2", -105.2, 105.2),
-    Joint("joint3", -166.2, 166.2),
-    Joint("joint4", -176.3, -6.7),
-    Joint("joint5", -164.8, 164.8),
-    Joint("joint6", 25.2, 264.8),
-    Joint("joint7", -174.8, 174.8),
+    Joint(f"{ARM_ID}_joint1", -166.0, 166.0),
+    Joint(f"{ARM_ID}_joint2", -101.0, 101.0),
+    Joint(f"{ARM_ID}_joint3", -166.0, 166.0),
+    Joint(f"{ARM_ID}_joint4", -176.0, -4.0),
+    Joint(f"{ARM_ID}_joint5", -166.0, 166.0),
+    Joint(f"{ARM_ID}_joint6", -1.0, 215.0),
+    Joint(f"{ARM_ID}_joint7", -166.0, 166.0),
 ]
+
+# EXPERIMENTAL: motion through MoveIt. Off unless BRIDGE_EXPERIMENTAL_MOTION=1.
+# The supported real-robot path is apps/franka (panda-py); see docs/NUC-BRINGUP.md.
+EXPERIMENTAL_MOTION = os.environ.get("BRIDGE_EXPERIMENTAL_MOTION", "0") == "1"
+VELOCITY_SCALING = min(float(os.environ.get("BRIDGE_VELOCITY_SCALING", "0.1")), 0.3)
+TCP_OFFSET_M = float(os.environ.get("BRIDGE_TCP_OFFSET_M", "0.1034"))
+BASE_FRAME = os.environ.get("BRIDGE_BASE_FRAME", f"{ARM_ID}_link0")
 
 # The end-effector reference the twin drags to is the gripper tip. In the twin
 # model this is 130 mm along the tool +Z axis; MoveIt's Panda tip frame must
@@ -39,13 +50,13 @@ MOVE_GROUP = os.environ.get("BRIDGE_MOVE_GROUP", "panda_arm")
 
 # TCP/WS listener for the twin. The twin connects to the same origin; the Caddy
 # reverse proxy forwards /robot-ws here.
-WS_HOST = os.environ.get("BRIDGE_WS_HOST", "0.0.0.0")
+WS_HOST = os.environ.get("BRIDGE_WS_HOST", "127.0.0.1")
 WS_PORT = int(os.environ.get("BRIDGE_WS_PORT", "3001"))
 
 # ros2_control controller names. These must match the controllers loaded in the
 # ros2_control config (franka_ros2). Defaults follow the franka_moveit_config.
-TRAJ_CONTROLLER = os.environ.get("BRIDGE_TRAJ_CONTROLLER", "joint_trajectory_controller")
-GRIPPER_CONTROLLER = os.environ.get("BRIDGE_GRIPPER_CONTROLLER", "franka_gripper")
+TRAJ_CONTROLLER = os.environ.get("BRIDGE_TRAJ_CONTROLLER", f"{ARM_ID}_arm_controller")
+GRIPPER_CONTROLLER = os.environ.get("BRIDGE_GRIPPER_CONTROLLER", f"{ARM_ID}_gripper")
 
 # Topics / actions.
 JOINT_STATES_TOPIC = os.environ.get("BRIDGE_JOINT_STATES", "/joint_states")
