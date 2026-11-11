@@ -81,13 +81,16 @@ before anything else is running.
 - `GET /stream` -> MJPEG feed (shown in the twin)
 - `GET /detect` -> JSON list of detected pieces (board square + robot-frame target) and frame size
 - `GET /calibrate` -> fits and saves the board homography from ArUco corner markers (old path; refused once a wizard calibration exists)
+- `/calib/lens/*` -> lens distortion: capture views of a printed checkerboard, solve, straightened preview, printable pattern (`vision/lens.py`)
 - `/calib/*` -> the Calibrate wizard (draft, save, versions, rollback, final check); see `apps/vision/vision/calib_api.py`
 
 ### Calibrate the board (once)
 
 Use the **Calibrate** wizard in the twin (button in the main panel, or
 `/#calibrate`): camera, board geometry and orientation, empty-board reference,
-thresholds, board pose in the robot frame, save and final check. The chess loop
+thresholds, board pose in the robot frame, save and final check. Step 1 also
+fits a lens-distortion model from a printed checkerboard (needed for cheap or
+wide-angle webcams, whose bent image edges misread the edge squares). The chess loop
 refuses to run without a valid saved calibration. Runbook:
 [`docs/NUC-BRINGUP.md`](docs/NUC-BRINGUP.md) section 10. To try it without a
 camera: `VISION_CAMERA_SOURCE=synthetic .venv/bin/python -m vision`.

@@ -9,6 +9,12 @@ of the calibration file and is active at once (no restart).
   GET  /calib/camera           source, resolution, UVC controls, camera list
   POST /calib/camera           {index?, width?, height?, controls?, lock?}
   GET  /calib/metrics          brightness, focus (blur), clipping
+  GET  /calib/lens             lens views, coverage, the fitted model
+  POST /calib/lens/capture     {cols, rows, square_mm}  one view of the printed sheet
+  POST /calib/lens/solve       fit the lens model from the views (draft)
+  POST /calib/lens/clear       {views?, model?}
+  GET  /calib/lens/preview.jpg the live frame, straightened with the draft model
+  GET  /calib/lens/pattern.svg ?cols&rows&square  printable checkerboard
   GET  /calib/frame.jpg        current frame
   GET  /calib/topdown.jpg      top-down view with the draft (?src=reference)
   POST /calib/detect-board     {method: auto|aruco|chessboard}
@@ -38,7 +44,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from . import calib
+from . import calib, lens as lensmod
 from .board import Board, default_thresholds, detect_aruco_marker
 from .config import config
 
@@ -137,7 +143,14 @@ class Draft:
         self.reference_stats = None
         self.thresholds = default_thresholds()
         self.autotune = None
+        self.lens = None
+        self.lens_views = []
+        self.lens_pattern = {"cols": 9, "rows": 6, "square_mm": 25.0}
+        self.lens_result = None
         if doc and doc.get("schema") == calib.SCHEMA:
+            self.lens = lensmod.Lens.from_dict((doc.get("camera") or {}).get("intrinsics"))
+            if self.lens is not None and self.lens.info.get("pattern"):
+                self.lens_pattern = dict(self.lens.info["pattern"])
             b = doc.get("board") or {}
             self.square = float(b.get("square_mm", self.square))
             corners = b.get("image_corners_px") or {}
@@ -165,11 +178,13 @@ class Draft:
         if lab is None:
             self.H = None
             return
-        self.H = calib.homography_from_corners(lab, self.square, self.inner)
+        self.H = calib.homography_from_corners(calib.to_ideal(lab, self.lens), self.square,
+                                               calib.to_ideal(self.inner, self.lens))
         if frame is not None:
             g = _grey(frame)
-            self.grid_error = calib.grid_error(g, self.H, self.square)
-            self.a1_dark = calib.parity_score(calib.topdown_grey(frame, self.H, self.square), self.square, 2.0) < 0
+            self.grid_error = calib.grid_error(g, self.H, self.square, self.lens)
+            top = calib.topdown_grey(frame, self.H, self.square, 2.0, self.lens)
+            self.a1_dark = calib.parity_score(top, self.square, 2.0) < 0
 
     def board(self) -> Board:
         if self.H is None:
@@ -177,6 +192,7 @@ class Draft:
         b = Board()
         b._square = self.square
         b.set_homography(self.H)
+        b.set_lens(self.lens)
         b.thresholds = dict(self.thresholds)
         return b
 
@@ -196,7 +212,10 @@ class Draft:
             "has_reference": self.reference is not None,
             "reference_frames": self.reference_frames,
             "thresholds": self.thresholds,
-            "overlay": calib.grid_overlay(self.H, self.square) if self.H is not None else None,
+            "overlay": calib.grid_overlay(self.H, self.square, self.lens) if self.H is not None else None,
+            "lens": self.lens.as_dict() if self.lens is not None else None,
+            "lens_views": len(self.lens_views),
+            "lens_pattern": self.lens_pattern,
         }
         return out
 
@@ -398,7 +417,7 @@ def get_metrics(_q):
     g = _grey(f)
     roi = g
     if draft.H is not None:
-        pts = calib.project(draft.H, list(calib.plane_corners(draft.square).values())).astype(int)
+        pts = calib.project_raw(draft.H, list(calib.plane_corners(draft.square).values()), draft.lens).astype(int)
         x0, y0 = np.clip(pts.min(axis=0), 0, None)
         x1, y1 = pts.max(axis=0)
         if x1 - x0 > 20 and y1 - y0 > 20:
@@ -499,9 +518,9 @@ def post_camera(body, _q):
         cam = srv._camera
         for k, v in keep.items():
             cam.set_control(k, v)
-        if draft.H is not None:
+        if draft.H is not None or draft.lens is not None or draft.lens_views:
             draft.reset()
-            draft.notes = ["camera or resolution changed: board geometry reset, redo step 2"]
+            draft.notes = ["camera or resolution changed: lens model and board geometry reset, redo them"]
     results = {}
     for name, value in (body.get("controls") or {}).items():
         results[name] = cam.set_control(str(name), _num(value, name, -1e5, 1e5))
@@ -526,7 +545,8 @@ def post_detect_board(body, _q):
     if method not in ("auto", "aruco", "chessboard"):
         raise ApiError("method must be auto, aruco or chessboard")
     f = _mean_frame(2)
-    det = calib.detect_board(f, draft.square, method, aruco=detect_aruco_marker)
+    _check_lens_size(f)
+    det = calib.detect_board(f, draft.square, method, aruco=detect_aruco_marker, lens=draft.lens)
     draft.markers = det["markers"]
     if not det["ok"]:
         return {"ok": False, "error": det["error"], "markers": det["markers"]}
@@ -556,6 +576,7 @@ def post_corners(body, _q):
         raise ApiError("the corners are mirrored: click a1, h1, h8, a8 so that they run counterclockwise on the screen "
                        "(a1 -> h1 along rank 1, then up to h8). Tick 'camera image is mirrored' only if it is.")
     f = _mean_frame(2)
+    _check_lens_size(f)
     draft.raw_corners = raw
     draft.a1_index = 0
     draft.mirrored_camera = mirrored_camera
@@ -654,6 +675,8 @@ def post_save(body, _q):
         s = draft.square / square
         H = H @ np.diag([s, s, 1.0])
     cam = _srv()._get_camera()
+    if draft.lens is not None and draft.lens.size != (cam.width, cam.height):
+        raise ApiError("the lens model is for another resolution: calibrate the lens again (step 1) or clear it")
     lab = draft.labelled()
     robot = {
         "origin_twin_mm": origin,
@@ -670,7 +693,8 @@ def post_save(body, _q):
         "schema": calib.SCHEMA,
         "operator_note": note,
         "camera": {"source": str(cam.index), "width": cam.width, "height": cam.height,
-                   "controls": dict(cam.controls_set), "intrinsics": None},
+                   "controls": dict(cam.controls_set),
+                   "intrinsics": draft.lens.as_dict() if draft.lens is not None else None},
         "board": {
             "square_mm": square,
             "homography": (H / H[2, 2]).tolist(),
@@ -753,15 +777,143 @@ def post_sim_scene(body, _q):
             isinstance(k, str) and len(k) == 2 and k[0] in "abcdefgh" and k[1] in "12345678" and v in ("w", "b")
             for k, v in pieces.items())):
         raise ApiError('pieces must be {"<square>": "w" | "b", ...}')
+    pattern = body.get("pattern", "keep")
+    if pattern not in ("keep", None) and (isinstance(pattern, bool) or not isinstance(pattern, int)):
+        raise ApiError("pattern must be a pose number or null")
     cam.scene.set(preset=preset, markers=body.get("markers"), light=body.get("light"), glare=body.get("glare"),
-                  shadow=body.get("shadow"), moves=[[str(a), str(b)] for a, b in moves], pieces=pieces)
+                  shadow=body.get("shadow"), moves=[[str(a), str(b)] for a, b in moves], pieces=pieces,
+                  lens=body.get("lens"), pattern=pattern)
     return {"ok": True, **cam.scene.as_dict()}
+
+
+# lens ------------------------------------------------------------------------
+
+
+def _check_lens_size(frame):
+    if draft.lens is not None:
+        try:
+            draft.lens.check_frame(frame)
+        except ValueError as e:
+            raise ApiError(str(e)) from None
+
+
+def _lens_status():
+    cam = _srv()._get_camera()
+    size = (cam.width, cam.height)
+    out = {"ok": True, "pattern": draft.lens_pattern, "views": len(draft.lens_views),
+           "min_views": lensmod.MIN_VIEWS, "good_views": lensmod.GOOD_VIEWS,
+           "coverage": lensmod.coverage([v["corners"] for v in draft.lens_views], size),
+           "lens": draft.lens.as_dict() if draft.lens is not None else None,
+           "result": draft.lens_result}
+    if draft.lens is not None and draft.lens.size != size:
+        out["warning"] = "the lens model is for another resolution: calibrate again or clear it"
+    return out
+
+
+def _pattern_args(src):
+    cols = int(_num(src.get("cols", draft.lens_pattern["cols"]), "cols", 3, 30))
+    rows = int(_num(src.get("rows", draft.lens_pattern["rows"]), "rows", 3, 30))
+    square = _num(src.get("square_mm", draft.lens_pattern["square_mm"]), "square_mm", 3, 200)
+    if cols == rows:
+        raise ApiError("cols and rows must differ (a square pattern has no defined orientation)")
+    return cols, rows, square
+
+
+def get_lens(_q):
+    return _lens_status()
+
+
+def get_lens_preview(_q):
+    import cv2
+
+    if draft.lens is None:
+        raise ApiError("no lens model yet", 404)
+    f = _frame()
+    try:
+        img = draft.lens.undistort_image(f)
+    except ValueError as e:
+        raise ApiError(str(e)) from None
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return ("image/jpeg", buf.tobytes())
+
+
+def get_lens_pattern(q):
+    one = {k: float(v[0]) for k, v in q.items() if k in ("cols", "rows", "square") and v}
+    if "square" in one:
+        one["square_mm"] = one.pop("square")
+    cols, rows, square = _pattern_args(one)
+    return ("image/svg+xml", lensmod.pattern_svg(cols, rows, square).encode())
+
+
+def post_lens_capture(body, _q):
+    cols, rows, square = _pattern_args(body)
+    pattern = {"cols": cols, "rows": rows, "square_mm": square}
+    if pattern != draft.lens_pattern and draft.lens_views:
+        raise ApiError("the pattern changed: clear the views first")
+    draft.lens_pattern = pattern
+    if len(draft.lens_views) >= lensmod.MAX_VIEWS:
+        raise ApiError(f"{lensmod.MAX_VIEWS} views is enough: solve, or clear the views")
+    f = _frame()  # one frame: a hand-held sheet moves, an average would blur it
+    pts = lensmod.find_pattern(f, cols, rows)
+    if pts is None:
+        raise ApiError(f"no {cols} x {rows} pattern found: show the whole sheet, flat and sharp, "
+                       "and check the number of INNER corners")
+    size = (int(f.shape[1]), int(f.shape[0]))
+    if lensmod.similar(pts, [v["corners"] for v in draft.lens_views], size):
+        raise ApiError("almost the same view as before: move the sheet to another place or tilt it more")
+    draft.lens_views.append({"corners": pts.tolist(), "size": list(size)})
+    return {**_lens_status(), "found": pts.round(1).tolist()}
+
+
+def post_lens_solve(_body, _q):
+    if not draft.lens_views:
+        raise ApiError("capture views of the printed sheet first")
+    sizes = {tuple(v["size"]) for v in draft.lens_views}
+    if len(sizes) != 1:
+        raise ApiError("the views have different resolutions: clear them and capture again")
+    p = draft.lens_pattern
+    try:
+        res = lensmod.solve([v["corners"] for v in draft.lens_views], sizes.pop(), p["cols"], p["rows"], p["square_mm"])
+    except ValueError as e:
+        raise ApiError(str(e)) from None
+    draft.lens = res.pop("lens")
+    draft.lens_result = res
+    _lens_changed()
+    return _lens_status()
+
+
+def post_lens_clear(body, _q):
+    if body.get("views", True):
+        draft.lens_views = []
+        draft.lens_result = None
+    if body.get("model", False) and draft.lens is not None:
+        draft.lens = None
+        _lens_changed()
+    return _lens_status()
+
+
+def _lens_changed():
+    """A new (or no) lens model: refit the board from the same raw corners."""
+    if draft.raw_corners is None:
+        return
+    f = _mean_frame(2)
+    _check_lens_size(f)
+    draft.refit(f)
+    draft.reference_stats = None
+    draft.autotune = None
+    if draft.confirmed:
+        draft.confirmed = False
+        draft.notes = ["the lens model changed: check the board overlay, confirm the orientation again (step 2) "
+                       "and run the auto-tune again (step 4)"]
 
 
 _GET = {
     "/calib/state": get_state,
     "/calib/camera": get_camera,
     "/calib/metrics": get_metrics,
+    "/calib/lens": get_lens,
+    "/calib/lens/preview.jpg": get_lens_preview,
+    "/calib/lens/pattern.svg": get_lens_pattern,
     "/calib/frame.jpg": get_frame_jpg,
     "/calib/topdown.jpg": get_topdown_jpg,
     "/calib/reference": get_reference,
@@ -772,6 +924,9 @@ _GET = {
 }
 _POST = {
     "/calib/camera": post_camera,
+    "/calib/lens/capture": post_lens_capture,
+    "/calib/lens/solve": post_lens_solve,
+    "/calib/lens/clear": post_lens_clear,
     "/calib/detect-board": post_detect_board,
     "/calib/corners": post_corners,
     "/calib/orientation": post_orientation,

@@ -72,6 +72,42 @@ export const overlaySchema = z.object({
   corners: z.record(px),
 });
 
+/** The lens model (vision/lens.py): pinhole K + 5 distortion coefficients, one resolution. */
+export const lensModelSchema = z
+  .object({
+    model: z.string(),
+    width: z.number(),
+    height: z.number(),
+    K: z.array(z.array(finite).length(3)).length(3),
+    dist: z.array(finite),
+    fov_deg: z.tuple([finite, finite]),
+    max_shift_px: finite,
+    rms_px: finite.optional(),
+    views: z.number().optional(),
+  })
+  .passthrough();
+
+const coverageSchema = z.object({ cells: z.tuple([z.number(), z.number()]), hit: z.array(z.array(z.number())), fraction: finite });
+const lensPatternSchema = z.object({ cols: z.number(), rows: z.number(), square_mm: finite });
+
+export const lensStatusSchema = z
+  .object({
+    ok: z.literal(true),
+    pattern: lensPatternSchema,
+    views: z.number(),
+    min_views: z.number(),
+    good_views: z.number(),
+    coverage: coverageSchema,
+    lens: lensModelSchema.nullable(),
+    result: z
+      .object({ rms_px: finite, per_view_px: z.array(finite), dropped: z.array(z.number()), warnings: z.array(z.string()) })
+      .passthrough()
+      .nullable(),
+    warning: z.string().optional(),
+    found: z.array(px).optional(),
+  })
+  .passthrough();
+
 export const draftSchema = z
   .object({
     square_mm: finite,
@@ -91,6 +127,8 @@ export const draftSchema = z
     reference_frames: z.number(),
     thresholds: thresholdsSchema,
     overlay: overlaySchema.nullable(),
+    lens: lensModelSchema.nullable().optional(),
+    lens_views: z.number().optional(),
   })
   .passthrough();
 export type Draft = z.infer<typeof draftSchema>;

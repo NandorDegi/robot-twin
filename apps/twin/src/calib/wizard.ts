@@ -1,7 +1,8 @@
 /**
  * Calibrate: a guided wizard for the board perception (route #calibrate).
  *
- *  1 Camera       pick the camera and resolution, lock exposure / white balance / focus, live quality
+ *  1 Camera       pick the camera and resolution, lock exposure / white balance / focus, live quality,
+ *                 lens distortion from a printed checkerboard (optional; needed for cheap or wide-angle webcams)
  *  2 Board        detect markers or the grid (or click a1, h1, h8, a8), reprojection error, orientation
  *  3 Reference    average N frames of the empty board, per-square brightness, glare/shadow warnings
  *  4 Detection    start position, per-square result + confidence, auto-tune, sliders, move test
@@ -28,6 +29,7 @@ type Metrics = Awaited<ReturnType<typeof api.metrics>>;
 type RefStats = Awaited<ReturnType<typeof api.reference>>;
 type Squares = Awaited<ReturnType<typeof api.squares>>;
 type Versions = Awaited<ReturnType<typeof api.versions>>;
+type LensStatus = Awaited<ReturnType<typeof api.lens>>;
 
 interface CalibStatusMsg {
   required: boolean;
@@ -73,6 +75,8 @@ export function mountCalibration(opts: CalibrationMountOptions): void {
     vs: null as VState | null,
     cam: null as Camera | null,
     metrics: null as Metrics | null,
+    lens: null as LensStatus | null,
+    lensFound: null as [number, number][] | null,
     ref: null as RefStats | null,
     squares: null as Squares | null,
     tune: null as any,
@@ -322,6 +326,25 @@ export function mountCalibration(opts: CalibrationMountOptions): void {
         }
       }
     }
+    if (S.step === 1 && S.lens && S.lens.views > 0) {
+      // Lens views: the image cells the sheet has covered (the edges matter most), and the last found corners.
+      const [nx, ny] = S.lens.coverage.cells;
+      const cw = canvas.width / nx;
+      const ch = canvas.height / ny;
+      S.lens.coverage.hit.forEach((row, iy) =>
+        row.forEach((hit, ix) => {
+          g.fillStyle = hit ? "rgba(57,198,107,0.16)" : "rgba(242,184,75,0.10)";
+          g.fillRect(ix * cw + 1, iy * ch + 1, cw - 2, ch - 2);
+        }),
+      );
+      if (S.lensFound) {
+        g.fillStyle = "#39c66b";
+        for (const p of S.lensFound) {
+          const [x, y] = P(p);
+          g.fillRect(x - 2, y - 2, 4, 4);
+        }
+      }
+    }
     if (S.pickA1 && d?.raw_corners) {
       for (const p of d.raw_corners) {
         const [x, y] = P(p);
@@ -441,6 +464,7 @@ export function mountCalibration(opts: CalibrationMountOptions): void {
       h("h3", {}, "Live image quality"),
       meters,
       warns,
+      lensSection(),
       sim,
     );
     async function applyCam() {
@@ -488,9 +512,97 @@ export function mountCalibration(opts: CalibrationMountOptions): void {
           h("span", {}, "Frame"), h("span", {}, `${m.width} x ${m.height}${m.board_roi ? " (measured on the board)" : ""}`),
         );
         warns.textContent = m.warnings.join(" · ");
+        lensPage.update();
       },
     };
   }
+
+  function lensSection(): HTMLElement {
+    const num = (id: string, v: number, step = "1") => h("input", { type: "number", id, value: String(v), step, style: "width:56px" });
+    const p = S.vs?.draft.lens_pattern as { cols: number; rows: number; square_mm: number } | undefined;
+    const cols = num("calibLensCols", p?.cols ?? 9);
+    const rows = num("calibLensRows", p?.rows ?? 6);
+    const sq = num("calibLensSq", p?.square_mm ?? 25, "0.5");
+    const info = h("div", { class: "kv", id: "calibLensInfo" });
+    const warns = h("div", { class: "warn", id: "calibLensWarn" });
+    const preview = h("img", { alt: "straightened", style: "width:100%;border:1px solid #2a3140;border-radius:6px;display:none;margin-top:6px" });
+    const pattern = () => ({ cols: Number(cols.value), rows: Number(rows.value), square_mm: Number(sq.value) });
+    const printLink = h("a", { href: "#", target: "_blank", style: "color:#8fb4ff" }, "Print the pattern (SVG, print at 100 %)");
+    const setLink = () => {
+      const q = pattern();
+      printLink.setAttribute("href", `${VISION}/calib/lens/pattern.svg?cols=${q.cols}&rows=${q.rows}&square=${q.square_mm}`);
+    };
+    for (const el of [cols, rows, sq]) el.addEventListener("change", setLink);
+    setLink();
+    const refresh = async () => {
+      S.lens = await api.lens();
+    };
+    void refresh().then(() => refreshSide()).catch(() => {});
+    const box = h(
+      "div",
+      { id: "calibLens" },
+      h("h3", {}, "Lens distortion (recommended for cheap or wide-angle webcams)"),
+      h("div", { class: "guide" },
+        "A webcam lens bends straight lines, most at the image edges, so the edge squares are read from the wrong place. ",
+        "Print the checkerboard, glue it flat on card, and hold it in front of the camera. Capture a view at the centre, at each corner and edge, and tilted (about 30°) left, right, up and down. ",
+        "Keep the whole sheet in view and hold it still. 15–20 views are best. Then solve. The board steps use the model at once."),
+      h("div", { class: "row" }, h("label", {}, "Inner corners"), cols, h("span", {}, "x"), rows, h("label", { style: "min-width:0" }, "square mm"), sq),
+      h("div", { class: "row" }, printLink),
+      h("div", { class: "buttons" },
+        btn("calibLensCapture", "Capture view", () => void run("Capture a lens view", async () => {
+          const r = await api.lensCapture(pattern());
+          S.lens = r;
+          S.lensFound = (r.found as [number, number][] | undefined) ?? null;
+          say(`view ${r.views} captured`, "good");
+        })),
+        btn("calibLensSolve", "Solve", () => void run("Solve the lens model", async () => {
+          S.lens = await api.lensSolve();
+          S.lensFound = null;
+        })),
+        btn("calibLensClearViews", "Clear views", () => void run("Clear the lens views", async () => {
+          S.lens = await api.lensClear({ views: true });
+          S.lensFound = null;
+        })),
+        btn("calibLensRemove", "Remove model", () => void run("Remove the lens model", async () => {
+          S.lens = await api.lensClear({ views: true, model: true });
+          S.lensFound = null;
+        })),
+        btn("calibLensPreview", "Straightened view", () => {
+          preview.style.display = preview.style.display === "none" ? "" : "none";
+          refreshSide();
+        }),
+      ),
+      info,
+      warns,
+      preview,
+    );
+    lensPage = {
+      update() {
+        const l = S.lens;
+        info.innerHTML = "";
+        warns.textContent = "";
+        if (!l) return;
+        const m = l.lens;
+        info.append(
+          h("span", {}, "Views"), h("span", { id: "calibLensViews" }, `${l.views} (at least ${l.min_views}, best ${l.good_views}+)`),
+          h("span", {}, "Coverage"), h("span", {}, `${Math.round(l.coverage.fraction * 100)} % of the image cells`),
+          h("span", {}, "Model"), h("span", { id: "calibLensModel", class: m ? "good" : "" }, m ? `${m.width} x ${m.height}, RMS ${fmt(m.rms_px, 2)} px, ${m.views ?? "?"} views` : "none (raw image used)"),
+        );
+        if (m) {
+          info.append(
+            h("span", {}, "Correction"), h("span", {}, `up to ${fmt(m.max_shift_px, 0)} px at the image border`),
+            h("span", {}, "Field of view"), h("span", {}, `${fmt(m.fov_deg[0], 0)}° x ${fmt(m.fov_deg[1], 0)}°`),
+          );
+        }
+        const w = [...(l.result?.warnings ?? []), ...(l.warning ? [l.warning] : [])];
+        warns.textContent = w.join(" · ");
+        if (preview.style.display !== "none" && m) preview.src = `${VISION}/calib/lens/preview.jpg?t=${Date.now()}`;
+      },
+    };
+    return box;
+  }
+  let lensPage: { update: () => void } = { update: () => {} };
+  let simSheet = -1;
 
   function simScene(): HTMLElement {
     const s = (label: string, body: unknown, id: string) => btn(id, label, () => void run(`Synthetic scene: ${label}`, () => api.scene(body)));
@@ -507,6 +619,13 @@ export function mountCalibration(opts: CalibrationMountOptions): void {
         s("Glare off", { glare: false, shadow: false }, "simGlareOff"),
         s("Play e2-e4", { moves: [["e2", "e4"]] }, "simE4"),
         s("Play e7-e5", { moves: [["e7", "e5"]] }, "simE5"),
+        s("Lens bend on", { lens: true }, "simLensOn"),
+        s("Lens bend off", { lens: false }, "simLensOff"),
+        btn("simSheetNext", "Sheet: next pose", () => void run("Synthetic scene: sheet", async () => {
+          simSheet = (simSheet + 1) % 18;
+          await api.scene({ pattern: simSheet });
+        })),
+        s("Sheet away", { pattern: null }, "simSheetAway"),
       ),
     );
   }

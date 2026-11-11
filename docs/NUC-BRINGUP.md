@@ -471,11 +471,31 @@ pose than the default, set `CHESS_OBSERVE_POSE` first (section 12, item 1).
    image looks right, tick the **Exposure**, **White balance** and **Focus**
    locks (UVC controls; "not supported" when the camera has none). Expected:
    brightness between 60 and 200, focus "sharp", clipped under 1 %.
+   - **Lens distortion** (same page; do it for a cheap or wide-angle webcam,
+     and always when step 4 misreads squares at the board edges). A webcam lens
+     bends straight lines, most at the image edges. One homography cannot follow
+     a bent board, so the edge files and ranks are read from the wrong place.
+     1. Open **Print the pattern** (default 9 x 6 inner corners, 25 mm squares).
+        Print it at 100 % (no "fit to page"). Measure one square, and enter the
+        measured size. Glue the sheet flat on card: a bent sheet gives a bad model.
+     2. Lock the focus first (the model is valid for one focus and one resolution).
+     3. Hold the sheet in front of the camera and press **Capture view**:
+        centre, the four corners, the four edges, and tilted about 30 degrees left,
+        right, up and down. Keep the whole sheet in view and hold it still. Green
+        cells on the image show where the sheet has been. Fill all of them.
+     4. With 15-20 views, press **Solve**. Expected: RMS under 0.5 px and no
+        warning. **Straightened view** must show straight board edges.
+     The model is saved in the calibration file (`camera.intrinsics`). A new
+     model resets the orientation confirmation: confirm step 2 again and run
+     the auto-tune in step 4 again. A change of the camera or the resolution
+     removes the model. Without a model the raw image is used, as before.
 2. **Board geometry.** Put the four ArUco markers (`DICT_4X4_50`, ids 0-3) with
    their **centre** on the outer corners: **0 = a8, 1 = h8, 2 = a1, 3 = h1**,
    or show an empty board. Press **Detect automatically**. The grid and the
    corner names are drawn on the live image. Expected: reprojection error under
-   1.5 px mean, "a1 is dark: yes".
+   1.5 px mean, "a1 is dark: yes". A mean error above about 2 px with straight
+   board edges in the stream, but bent ones near the image border, means lens
+   distortion: do the lens part of step 1.
    - If nothing is found: **Click 4 corners** and click the outer corners in
      the order the guidance shows (a1, h1, h8, a8, counterclockwise on the
      screen). A mirrored order is refused.

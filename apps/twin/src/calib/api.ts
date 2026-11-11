@@ -6,6 +6,7 @@ import {
   autotuneSchema,
   cameraInfoSchema,
   draftSchema,
+  lensStatusSchema,
   metricsSchema,
   referenceStatsSchema,
   saveResultSchema,
@@ -79,4 +80,8 @@ export const api = {
   rollback: (revision: number) => vpost("/calib/rollback", { revision }, anyOk),
   resetDraft: (from: "active" | "empty") => vpost("/calib/draft/reset", { from }, anyOk),
   scene: (b: unknown) => vpost("/calib/sim/scene", b, anyOk),
+  lens: () => vget("/calib/lens", lensStatusSchema),
+  lensCapture: (b: { cols: number; rows: number; square_mm: number }) => vpost("/calib/lens/capture", b, lensStatusSchema),
+  lensSolve: () => vpost("/calib/lens/solve", {}, lensStatusSchema),
+  lensClear: (b: { views?: boolean; model?: boolean }) => vpost("/calib/lens/clear", b, lensStatusSchema),
 };

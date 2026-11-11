@@ -265,7 +265,7 @@ def api(tmp_path, monkeypatch):
 def test_wizard_flow_through_the_handlers(api):
     a = calib_api
     api._camera.scene.set(preset="empty", markers=True)
-    api._camera._frame = api._camera.render_now()
+    api._camera.refresh()
     with pytest.raises(a.ApiError):
         a.post_save({"robot": {"origin_twin_mm": [600, 0, -160]}}, {})  # nothing yet
     det = a.post_detect_board({"method": "auto"}, {})
@@ -294,7 +294,7 @@ def test_wizard_flow_through_the_handlers(api):
 
 def test_manual_corners_refuse_the_mirrored_order(api):
     a = calib_api
-    api._camera._frame = api._camera.render_now()
+    api._camera.refresh()
     good = [list(TRUE_CORNERS[n]) for n in calib.CORNERS]
     ranks_mirrored = [good[3], good[2], good[1], good[0]]  # a8, h8, h1, a1 clicked as a1, h1, h8, a8
     with pytest.raises(a.ApiError, match="mirrored"):

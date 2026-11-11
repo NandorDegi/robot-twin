@@ -7,6 +7,11 @@ robot unless somebody sets the variable.
 
 The board is rendered in perspective from a known homography, so tests can
 compare a fitted calibration with the truth (TRUE_CORNERS).
+
+With `lens` on, the image is bent like a cheap wide-angle webcam (TRUE_LENS);
+TRUE_CORNERS are then IDEAL pixels. With `pattern` set to a pose number, a
+printed lens checkerboard (9 x 6 inner corners, 25 mm) is held in front of the
+camera instead, at one of PATTERN_POSES, for the lens step.
 """
 
 import threading
@@ -27,6 +32,75 @@ BASE_SIZE = (1280, 720)
 MARGIN_MM = 40.0
 TEX_PX_PER_MM = 2.0
 MARKER_MM = 26.0
+# The synthetic webcam lens (1280x720): strong barrel distortion.
+TRUE_K = ((900.0, 0.0, 640.0), (0.0, 900.0, 360.0), (0.0, 0.0, 1.0))
+TRUE_DIST = (-0.30, 0.10, 0.0, 0.0, 0.0)
+PATTERN = (9, 6, 25.0)
+# (yaw, pitch, roll deg, x, y mm from the optical axis, distance mm): edges and tilts.
+PATTERN_POSES = [
+    (0, 0, 0, 0, 0, 600), (25, 0, 0, -140, -80, 560), (-25, 0, 0, 140, -80, 560),
+    (0, 25, 0, -160, 70, 580), (0, -25, 0, 160, 70, 580), (15, 15, 10, -230, -120, 650),
+    (-15, 15, -10, 230, -120, 650), (15, -15, 5, -230, 120, 650), (-15, -15, -5, 230, 120, 650),
+    (30, 10, 0, 0, -140, 620), (-10, 30, 15, 0, 140, 620), (0, 0, 30, -260, 0, 700),
+    (0, 0, -30, 260, 0, 700), (20, -20, 0, -60, 40, 480), (-20, 20, 0, 60, -40, 480),
+    (35, 0, 5, -200, 0, 620), (-35, 0, -5, 200, 0, 620), (0, 35, 0, 0, -60, 600),
+]
+
+
+def true_lens(width: int = BASE_SIZE[0], height: int = BASE_SIZE[1]):
+    from .lens import Lens
+
+    sx, sy = width / BASE_SIZE[0], height / BASE_SIZE[1]
+    K = np.array(TRUE_K, dtype=float)
+    K[0] *= sx
+    K[1] *= sy
+    return Lens(K, TRUE_DIST, (width, height))
+
+
+_DISTORT_MAPS: dict = {}
+
+
+def apply_lens(img, lens):
+    """Bend an ideal image like the lens: each raw pixel samples its ideal point."""
+    import cv2
+
+    h, w = img.shape[:2]
+    key = (w, h, lens.K.tobytes(), lens.dist.tobytes())
+    if key not in _DISTORT_MAPS:
+        v, u = np.mgrid[0:h, 0:w].astype(float)
+        ideal = lens.to_ideal(np.stack([u.ravel(), v.ravel()], 1))
+        _DISTORT_MAPS[key] = (ideal[:, 0].reshape(h, w).astype(np.float32), ideal[:, 1].reshape(h, w).astype(np.float32))
+    mx, my = _DISTORT_MAPS[key]
+    return cv2.remap(img, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def render_pattern(pose: int, width: int, height: int) -> np.ndarray:
+    """An ideal image of the printed lens sheet at PATTERN_POSES[pose]."""
+    import cv2
+
+    cols, rows, sq = PATTERN
+    yaw, pitch, roll, tx, ty, tz = PATTERN_POSES[pose % len(PATTERN_POSES)]
+    k = 4.0
+    nx, ny = cols + 1, rows + 1
+    m = 12.0
+    tex = np.full((int((ny * sq + 2 * m) * k), int((nx * sq + 2 * m) * k), 3), 245, np.uint8)
+    for r in range(ny):
+        for c in range(nx):
+            if (r + c) % 2 == 0:
+                cv2.rectangle(tex, (int((m + c * sq) * k), int((m + r * sq) * k)),
+                              (int((m + (c + 1) * sq) * k) - 1, int((m + (r + 1) * sq) * k) - 1), (15, 15, 15), -1)
+    R, _ = cv2.Rodrigues(np.radians([pitch, yaw, roll]).astype(float))
+    # Sheet frame: origin at the first inner corner; centre the sheet on (tx, ty).
+    centre = np.array([(cols - 1) * sq / 2, (rows - 1) * sq / 2, 0.0])
+    t = np.array([tx, ty, tz], float) - R @ centre
+    K = true_lens(width, height).K
+    Hs = K @ np.column_stack([R[:, 0], R[:, 1], t])  # sheet mm (x, y) -> ideal px
+    # Texture px -> sheet mm: the first inner corner is at texture (m + sq) * k.
+    T = np.array([[1 / k, 0, -(m + sq)], [0, 1 / k, -(m + sq)], [0, 0, 1]], float)
+    bg = np.zeros((height, width, 3), np.uint8)
+    bg[:] = (70, 100, 125)
+    return cv2.warpPerspective(tex, Hs @ T, (width, height), dst=bg, borderMode=cv2.BORDER_TRANSPARENT,
+                               flags=cv2.INTER_LINEAR)
 
 
 def start_occupancy() -> dict:
@@ -45,10 +119,19 @@ class SyntheticScene:
         self.light = 1.0
         self.glare = False
         self.shadow = False
+        self.lens = False
+        self.pattern = None
+        self.version = 0  # bumped by set(): a frame of an older scene is stale
         self.lock = threading.Lock()
 
-    def set(self, preset: str = None, markers=None, light=None, glare=None, shadow=None, moves=None, pieces=None):
+    def set(self, preset: str = None, markers=None, light=None, glare=None, shadow=None, moves=None, pieces=None,
+            lens=None, pattern="keep"):
         with self.lock:
+            self.version += 1
+            if lens is not None:
+                self.lens = bool(lens)
+            if pattern != "keep":
+                self.pattern = None if pattern is None else int(pattern)
             if preset == "empty":
                 self.pieces = {}
             elif preset == "start":
@@ -76,6 +159,8 @@ class SyntheticScene:
                 "light": self.light,
                 "glare": self.glare,
                 "shadow": self.shadow,
+                "lens": self.lens,
+                "pattern": self.pattern,
             }
 
 
@@ -95,6 +180,11 @@ def render(scene: SyntheticScene, width: int, height: int, controls: dict, rng=N
 
     rng = rng or np.random.default_rng()
     st = scene.as_dict()
+    if st["pattern"] is not None:
+        img = render_pattern(st["pattern"], width, height)
+        if st["lens"]:
+            img = apply_lens(img, true_lens(width, height))
+        return (img.astype(np.float32) + rng.normal(0, 2.0, img.shape)).clip(0, 255).astype(np.uint8)
     sq = scene.square
     k = TEX_PX_PER_MM
     size = int(round((8 * sq + 2 * MARGIN_MM) * k))
@@ -145,6 +235,8 @@ def render(scene: SyntheticScene, width: int, height: int, controls: dict, rng=N
     H = true_homography(width, height, sq)
     S = np.array([[k, 0, k * MARGIN_MM], [0, k, k * MARGIN_MM], [0, 0, 1]], dtype=float)
     img = cv2.warpPerspective(tex, H @ np.linalg.inv(S), (width, height), dst=bg, borderMode=cv2.BORDER_TRANSPARENT, flags=cv2.INTER_LINEAR)
+    if st["lens"]:
+        img = apply_lens(img, true_lens(width, height))
 
     f = img.astype(np.float32)
     exposure = controls.get("exposure", -5.0)
@@ -212,14 +304,28 @@ class SyntheticCamera:
 
     def _loop(self) -> None:
         while self._running:
+            version = self.scene.version
             frame = self.render_now()
             with self._lock:
                 self._frame = frame
+                self._version = version
             time.sleep(1.0 / self.fps)
 
-    def read(self):
+    def refresh(self):
+        """Render and publish a frame of the current scene now (tests)."""
+        version = self.scene.version
+        frame = self.render_now()
         with self._lock:
-            return self._frame
+            self._frame, self._version = frame, version
+        return frame
+
+    def read(self):
+        """The latest frame, or None while it still shows an older scene."""
+        with self._lock:
+            frame, version = self._frame, getattr(self, "_version", None)
+        if frame is not None and version is not None and version != self.scene.version:
+            return None
+        return frame
 
     def controls(self) -> dict:
         return dict(self._values)

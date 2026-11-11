@@ -5,6 +5,8 @@ Conventions (the same as vision.board):
   board plane (mm): origin at the a8 corner, x along the files a -> h,
   y along the ranks 8 -> 1. The homography H maps board plane -> pixel.
   Corner labels: a1, h1, h8, a8 (outer board corners).
+  With a lens model (vision.lens), H maps to IDEAL pixels; corners, clicks and
+  detections stay in RAW pixels and are converted with `to_ideal` / `to_raw`.
 
 Orientation rule: for a camera that looks down on the board (image not
 mirrored), the path a1 -> h1 -> h8 -> a8 runs counterclockwise on the screen.
@@ -26,7 +28,8 @@ import re
 
 import numpy as np
 
-from .board import Board, default_thresholds, square_name
+from .board import Board, default_thresholds, plane_warp, square_name
+from .lens import Lens
 
 SCHEMA = "robot-twin.calibration/1"
 CORNERS = ("a1", "h1", "h8", "a8")
@@ -112,31 +115,48 @@ def homography_from_corners(labelled: dict, square: float, inner_px=None) -> np.
     return H / H[2, 2]
 
 
+def to_ideal(points, lens):
+    """Raw pixels -> ideal pixels (unchanged without a lens model). dict or list."""
+    if lens is None or points is None:
+        return points
+    if isinstance(points, dict):
+        return {n: lens.to_ideal(np.asarray(p, float)).tolist() for n, p in points.items()}
+    return lens.to_ideal(np.asarray(points, float).reshape(-1, 2)).tolist()
+
+
+def project_raw(H: np.ndarray, pts, lens=None) -> np.ndarray:
+    """Board plane -> raw pixels (through the lens model when there is one)."""
+    q = project(H, pts)
+    return lens.to_raw(q) if lens is not None else q
+
+
 def project(H: np.ndarray, pts) -> np.ndarray:
     p = np.asarray(pts, dtype=float).reshape(-1, 2)
     q = (H @ np.hstack([p, np.ones((len(p), 1))]).T).T
     return q[:, :2] / q[:, 2:3]
 
 
-def grid_overlay(H: np.ndarray, square: float) -> dict:
-    """Pixel geometry for the UI overlay: grid lines, square centres, corners."""
+def grid_overlay(H: np.ndarray, square: float, lens=None) -> dict:
+    """Pixel geometry (raw pixels) for the UI overlay: grid lines, square centres,
+    corners. With a lens model each grid line is bent like the image, as short segments."""
     w = 8.0 * square
+    n = 8 if lens is not None else 1
+    t = np.linspace(0.0, w, n + 1)
     lines = []
     for i in range(9):
-        a, b = project(H, [(i * square, 0.0), (i * square, w)])
-        lines.append([a.tolist(), b.tolist()])
-        a, b = project(H, [(0.0, i * square), (w, i * square)])
-        lines.append([a.tolist(), b.tolist()])
+        for pts in ([(i * square, y) for y in t], [(x, i * square) for x in t]):
+            p = project_raw(H, pts, lens)
+            lines.extend([p[j].tolist(), p[j + 1].tolist()] for j in range(n))
     centres = {}
     for r in range(8):
         for f in range(8):
-            c = project(H, [((f + 0.5) * square, (7 - r + 0.5) * square)])[0]
+            c = project_raw(H, [((f + 0.5) * square, (7 - r + 0.5) * square)], lens)[0]
             centres[square_name(r, f)] = [round(float(c[0]), 1), round(float(c[1]), 1)]
-    corners = {n: [round(float(v), 1) for v in project(H, [p])[0]] for n, p in plane_corners(square).items()}
+    corners = {n: [round(float(v), 1) for v in project_raw(H, [p], lens)[0]] for n, p in plane_corners(square).items()}
     return {"lines": lines, "centres": centres, "corners": corners}
 
 
-def grid_error(grey, H: np.ndarray, square: float):
+def grid_error(grey, H: np.ndarray, square: float, lens=None):
     """Reprojection error (px) of the 49 inner grid corners.
 
     Each predicted corner is refined on the image (cornerSubPix); the error is
@@ -145,8 +165,8 @@ def grid_error(grey, H: np.ndarray, square: float):
     """
     cv2 = _cv2()
     nodes = [(i * square, j * square) for j in range(1, 8) for i in range(1, 8)]
-    pred = project(H, nodes).astype(np.float32)
-    a, b = project(H, [(0.0, 0.0), (square, 0.0)])
+    pred = project_raw(H, nodes, lens).astype(np.float32)
+    a, b = project_raw(H, [(0.0, 0.0), (square, 0.0)], lens)
     sq_px = float(np.linalg.norm(b - a))
     win = int(max(3, min(12, sq_px * 0.2)))
     h, w = grey.shape[:2]
@@ -188,15 +208,13 @@ def parity_score(grey_topdown, square: float, k: float) -> float:
     return float(np.mean(vals[0]) - np.mean(vals[1]))
 
 
-def topdown_grey(frame, H: np.ndarray, square: float, k: float = 2.0):
+def topdown_grey(frame, H: np.ndarray, square: float, k: float = 2.0, lens=None):
     cv2 = _cv2()
-    S = np.array([[k, 0, 0], [0, k, 0], [0, 0, 1]], dtype=float)
-    size = int(round(8 * square * k))
-    top = cv2.warpPerspective(frame, S @ np.linalg.inv(H), (size, size))
+    top = plane_warp(frame, H, lens, k, 8 * square)
     return top if top.ndim == 2 else cv2.cvtColor(top, cv2.COLOR_BGR2GRAY)
 
 
-def detect_board(frame, square: float, method: str = "auto", aruco=None) -> dict:
+def detect_board(frame, square: float, method: str = "auto", aruco=None, lens=None) -> dict:
     """Find the 4 outer board corners.
 
     aruco: markers 0..3 with the marker centre on a8, h8, a1, h1.
@@ -221,10 +239,12 @@ def detect_board(frame, square: float, method: str = "auto", aruco=None) -> dict
         if found:
             pts = pts.reshape(-1, 2)
             grid = np.float32([(c + 1, r + 1) for r in range(7) for c in range(7)])
-            H0, _ = cv2.findHomography(grid, pts.astype(np.float32), 0)
-            raw = project(H0, [(0, 0), (8, 0), (8, 8), (0, 8)]).tolist()
+            # Fit in ideal pixels: a bent grid extrapolates the outer corners badly.
+            ideal = np.float32(to_ideal(pts, lens))
+            H0, _ = cv2.findHomography(grid, ideal, 0)
+            raw = project_raw(H0, [(0, 0), (8, 0), (8, 8), (0, 8)], lens).tolist()
             out.update(ok=True, method="chessboard", raw_corners=raw, inner=pts.tolist(),
-                       a1_index=suggest_a1(frame, raw, square))
+                       a1_index=suggest_a1(frame, raw, square, lens))
     if not out["ok"]:
         out["error"] = (
             "no board found: show all 4 ArUco markers (ids 0-3) or an empty board, check focus and light; "
@@ -233,12 +253,12 @@ def detect_board(frame, square: float, method: str = "auto", aruco=None) -> dict
     return out
 
 
-def suggest_a1(frame, raw, square: float) -> int:
+def suggest_a1(frame, raw, square: float, lens=None) -> int:
     """Suggest the a1 corner: a1 must be a dark square; prefer the bottom-left."""
     order = sorted(range(4), key=lambda i: -(raw[i][1] - raw[i][0]))  # bottom-left first
     for i in order:
-        H = homography_from_corners(label_corners(raw, i), square)
-        if parity_score(topdown_grey(frame, H, square), square, 2.0) < 0:
+        H = homography_from_corners(to_ideal(label_corners(raw, i), lens), square)
+        if parity_score(topdown_grey(frame, H, square, 2.0, lens), square, 2.0) < 0:
             return i
     return order[0]
 
@@ -514,11 +534,13 @@ class CalibrationStore:
 def apply_to_board(doc: dict, board: Board) -> None:
     """Use a calibration document (new or old format) in a Board."""
     if doc.get("schema") != SCHEMA:
+        board.set_lens(None)
         if "H" in doc:  # old format: homography only
             board._square = float(doc.get("square", board.square_size))
             board.set_homography(np.array(doc["H"], dtype=float))
         return
     b = doc["board"]
+    board.set_lens(Lens.from_dict((doc.get("camera") or {}).get("intrinsics")))
     square = float(b.get("square_mm") or board.square_size)
     board._square = square
     board.set_homography(np.array(b["homography"], dtype=float))

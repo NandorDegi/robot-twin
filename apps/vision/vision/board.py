@@ -26,6 +26,10 @@ class Board:
         )
         self._rotation = config.BOARD_ROTATION_DEG
         self._H = None  # world(x,y) -> pixel homography (set by calibration)
+        # Lens model (vision.lens). With it, H maps to IDEAL pixels and every
+        # raw pixel is converted at the edges; without it, raw = ideal.
+        self.lens = None
+        self._warp_cache = None
         # Thresholds of /board. A saved wizard calibration overrides the env defaults.
         self.thresholds = default_thresholds()
 
@@ -33,6 +37,11 @@ class Board:
 
     def set_homography(self, H: np.ndarray) -> None:
         self._H = H
+        self._warp_cache = None
+
+    def set_lens(self, lens) -> None:
+        self.lens = lens
+        self._warp_cache = None
 
     def set_pose(self, origin, rotation_deg: float, square: float = None) -> None:
         """Board pose in the twin frame (a1 corner, mm; yaw, deg), from a calibration."""
@@ -136,13 +145,16 @@ class Board:
             raise RuntimeError("Board is not calibrated")
         p = np.array([xy[0], xy[1], 1.0])
         q = self._H @ p
-        return q[:2] / q[2]
+        q = q[:2] / q[2]
+        return self.lens.to_raw(q) if self.lens is not None else q
 
     def board_of_pixel(self, px: np.ndarray) -> np.ndarray:
         """Map pixel coords to board-plane (x, y) in mm."""
         if self._H is None:
             raise RuntimeError("Board is not calibrated")
         P = np.linalg.inv(self._H)
+        if self.lens is not None:
+            px = self.lens.to_ideal(np.asarray(px, dtype=float))
         p = np.array([px[0], px[1], 1.0])
         q = P @ p
         return q[:2] / q[2]
@@ -160,9 +172,14 @@ class Board:
         if self._H is None:
             raise RuntimeError("Board is not calibrated")
         k = px_per_mm or config.TOPDOWN_PX_PER_MM
-        S = np.array([[k, 0, 0], [0, k, 0], [0, 0, 1]], dtype=float)
-        size = int(round(self.board_width * k))
-        return cv2.warpPerspective(frame, S @ np.linalg.inv(self._H), (size, size))
+        if self.lens is None:
+            return plane_warp(frame, self._H, None, k, self.board_width)
+        key = (self._H.tobytes(), k, self.board_width, id(self.lens))
+        if self._warp_cache is None or self._warp_cache[0] != key:
+            self._warp_cache = (key, plane_maps(self._H, self.lens, k, self.board_width))
+        self.lens.check_frame(frame)
+        mx, my = self._warp_cache[1]
+        return cv2.remap(frame, mx, my, cv2.INTER_LINEAR)
 
     def board_state(self, frame, reference, thresholds: dict = None, details: bool = False) -> dict:
         """Per square: "w", "b" or None, compared with an EMPTY-board reference.
@@ -210,6 +227,29 @@ class Board:
                     int((row + inset) * sq), int((row + 1 - inset) * sq),
                     int((file_idx + inset) * sq), int((file_idx + 1 - inset) * sq),
                 )
+
+
+def plane_maps(H: np.ndarray, lens, k: float, width_mm: float):
+    """remap() maps of the top-down view: top-down pixel -> plane -> ideal -> raw pixel."""
+    size = int(round(width_mm * k))
+    v, u = np.mgrid[0:size, 0:size].astype(float)
+    plane = np.stack([u.ravel() / k, v.ravel() / k, np.ones(size * size)])
+    q = H @ plane
+    ideal = (q[:2] / q[2]).T
+    raw = lens.to_raw(ideal)
+    return raw[:, 0].reshape(size, size).astype(np.float32), raw[:, 1].reshape(size, size).astype(np.float32)
+
+
+def plane_warp(frame, H: np.ndarray, lens, k: float, width_mm: float):
+    """Top-down image of the board plane (a8 top-left), k px per mm, lens-corrected."""
+    cv2 = _cv2()
+    size = int(round(width_mm * k))
+    if lens is None:
+        S = np.array([[k, 0, 0], [0, k, 0], [0, 0, 1]], dtype=float)
+        return cv2.warpPerspective(frame, S @ np.linalg.inv(H), (size, size))
+    lens.check_frame(frame)
+    mx, my = plane_maps(H, lens, k, width_mm)
+    return cv2.remap(frame, mx, my, cv2.INTER_LINEAR)
 
 
 def default_thresholds() -> dict:
